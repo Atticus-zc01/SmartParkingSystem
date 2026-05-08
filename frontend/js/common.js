@@ -170,4 +170,8 @@ function initSidebar() {
         const vehicleNav = document.getElementById('nav-vehicles');
         if (vehicleNav) vehicleNav.style.display = 'none';
     }
+    if (!hasPerm('plate.recognize')) {
+        const recognizeNav = document.getElementById('nav-recognize');
+        if (recognizeNav) recognizeNav.style.display = 'none';
+    }
 }

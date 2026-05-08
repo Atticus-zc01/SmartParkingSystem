@@ -28,6 +28,9 @@
                 <a class="nav-item" id="nav-reservation" href="/reservation.html">
                     <span class="icon">&#128197;</span> 预约管理
                 </a>
+                <a class="nav-item" id="nav-recognize" href="/recognize.html">
+                    <span class="icon">&#128247;</span> 车牌识别
+                </a>
                 <a class="nav-item" id="nav-profile" href="/profile.html">
                     <span class="icon">&#128101;</span> 个人中心
                 </a>
@@ -184,11 +187,11 @@
                         </div>
                     </div>
 
-                    <!-- Plate recognition stub (admin/operator) -->
+                    <!-- Plate recognition (admin/operator) -->
                     <div class="card" id="card-plate-recognition">
-                        <div class="card-title">车牌识别 <span class="badge badge-warning">预留</span></div>
-                        <p style="color:#666;font-size:13px;margin-bottom:12px">OpenCV/EasyPR 接口已预留，集成后可自动识别车牌</p>
-                        <div id="plate-result"></div>
+                        <div class="card-title">车牌识别</div>
+                        <p style="color:#666;font-size:13px;margin-bottom:12px">使用摄像头自动识别车牌号并与系统已登记车辆进行比对</p>
+                        <a href="/recognize.html" class="btn btn-primary btn-sm btn-block" style="text-align:center">进入车牌识别</a>
                     </div>
                 </div>
             </div>

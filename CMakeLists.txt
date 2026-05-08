@@ -9,6 +9,15 @@ if(MSVC)
     add_compile_options(/utf-8)
 endif()
 
+# Find OpenCV (required for plate recognition)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs highgui)
+if(OpenCV_FOUND)
+    message(STATUS "OpenCV found: ${OpenCV_VERSION}")
+    include_directories(${OpenCV_INCLUDE_DIRS})
+else()
+    message(FATAL_ERROR "OpenCV not found. Please install OpenCV (https://opencv.org/releases/) and set OpenCV_DIR.")
+endif()
+
 # MySQL paths - adjust to your environment
 if(NOT DEFINED MYSQL_INCLUDE_DIR)
     if(WIN32)
@@ -48,17 +57,20 @@ target_include_directories(smart_parking PRIVATE
     ${MYSQL_INCLUDE_DIR}
     ${CMAKE_SOURCE_DIR}/third_party
     ${ASIO_INCLUDE_DIR}
+    ${OpenCV_INCLUDE_DIRS}
 )
 
-# Link MySQL + system libs
+# Link MySQL + system libs + OpenCV
 if(WIN32)
     target_link_libraries(smart_parking PRIVATE
         ${MYSQL_LIB_DIR}/mysqlclient.lib
         ws2_32 secur32 bcrypt crypt32
+        ${OpenCV_LIBS}
     )
 else()
     target_link_libraries(smart_parking PRIVATE
         mysqlclient pthread
+        ${OpenCV_LIBS}
     )
 endif()
 
