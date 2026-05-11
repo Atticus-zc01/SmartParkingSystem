@@ -104,6 +104,34 @@
 
 ---
 
+## 第七阶段：完整失败诊断与检测管线重构
+
+### 根因分析
+
+用户反馈"什么都识别不出来"后，进行了系统性诊断：
+
+1. **二值化极性错误**（根本原因）: `THRESH_BINARY_INV` 对蓝色车牌产生黑字白底 → `findContours` 找到的是白色背景 → 返回 0 个字符
+2. **CLAHE 8×8 tile 与 JPEG 8×8 DCT 块对齐** → 放大块效应伪影
+3. **自适应阈值 C=4** → 字符过度分裂
+4. **偶数核形态学运算** → 锚点偏移
+5. **汉字字符根本不在模板中** → Hershey 字体只有 ASCII，汉字永远输出 `?`
+6. **车牌检测主次颠倒**: 边缘检测始终返回假阳性 → HSV 备选永不触发
+
+### 修复措施
+
+1. `segmentCharacters()`: 白像素 >50% 时 `bitwise_not` 极性反转
+2. `preprocessPlateRegion()`: CLAHE tile 8×8 → 10×10
+3. `binarizePlate()`: 自适应阈值 C=4 → C=6
+4. 所有形态学核 2×2 → 3×3
+5. `segmentCharacters()`: 宽高比上限 6.0 → 12.0（解决 '1' 被过滤）
+6. `recognizeCharacters()`: 最小字符数 5 → 3
+7. **`detectPlateCandidates()` 重写**: HSV 升为主检测方法，边缘检测降为备选
+
+### 提交记录
+
+- `61c655b` — docs: 添加完整操作步骤总结文档
+- `[当前提交]` — fix: 修复车牌识别极性错误并重构检测管线
+
 ## 最终架构
 
 ```
@@ -111,16 +139,16 @@
     ↓ POST /api/plate/recognize-image
 服务端 PlateRecognizer:
     base64解码 → imdecode → detectPlateCandidates()
-        ├─ HSV颜色检测 (蓝/绿色范围)
-        └─ 边缘检测 + 轮廓分析 (面积/宽高比/矩形度)
+        ├─ [主] HSV颜色检测 (蓝/绿, 阈值 S≥50 V≥40)
+        └─ [辅] 边缘检测 (仅添加与HSV不重叠的候选项)
     ↓
     analyzePlateColor() → 蓝/绿/黄牌识别
     ↓
     recognizeCharacters():
         ├─ preprocessPlateRegion() → CLAHE + 缩放 + 高斯模糊
-        ├─ binarizePlate() → Otsu/自适应阈值自动选优
+        ├─ binarizePlate() → Otsu/自适应阈值自动选优、极性校正
         ├─ segmentCharacters() → 轮廓法分割 + 重叠合并
-        └─ matchCharacter() → Hu矩形状匹配 + 孔洞数过滤
+        └─ matchCharacter() → Hu矩 + 孔洞数 + NCC 融合排序
     ↓
     checkRegistration() → 四表联合查询
         ├─ CAR_RECORD (入场记录/是否在场)

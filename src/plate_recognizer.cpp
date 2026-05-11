@@ -29,7 +29,10 @@ std::vector<uchar> PlateRecognizer::base64Decode(const std::string& data) {
 
     int val = 0, bits = -8;
     for (char c : clean) {
-        if (T[c] == -1) break;
+        if (T[c] == -1) {
+            // Handle padding '=' — stop processing this group
+            break;
+        }
         val = (val << 6) + T[c];
         bits += 6;
         if (bits >= 0) {
@@ -53,6 +56,9 @@ static std::vector<cv::Point> extractMainContour(const cv::Mat& binary_img) {
         });
 }
 
+// Forward declarations for static helpers used by initTemplates
+static int countHoles(const cv::Mat& binary_char);
+
 // ========== Initialize templates ==========
 void PlateRecognizer::initTemplates() {
     if (templates_initialized_) return;
@@ -74,8 +80,20 @@ void PlateRecognizer::initTemplates() {
         cv::dilate(tmpl, tmpl, cv::getStructuringElement(cv::MORPH_RECT, cv::Size(2, 2)));
         cv::dilate(tmpl, tmpl, cv::getStructuringElement(cv::MORPH_RECT, cv::Size(2, 2)));
         cv::resize(tmpl, tmpl, cv::Size(28, 44));
+        cv::threshold(tmpl, tmpl, 128, 255, cv::THRESH_BINARY);
         digit_templates_[d] = tmpl;
         digit_contours_[d] = extractMainContour(tmpl);
+    }
+
+    // Precompute digit features
+    digit_holes_.resize(10);
+    digit_aspects_.resize(10);
+    digit_fills_.resize(10);
+    for (int d = 0; d < 10; ++d) {
+        digit_holes_[d] = countHoles(digit_templates_[d]);
+        digit_aspects_[d] = (double)digit_templates_[d].rows / digit_templates_[d].cols;
+        digit_fills_[d] = (double)cv::countNonZero(digit_templates_[d]) /
+                          (digit_templates_[d].rows * digit_templates_[d].cols);
     }
 
     // Letter templates (A-Z)
@@ -90,8 +108,20 @@ void PlateRecognizer::initTemplates() {
         cv::dilate(tmpl, tmpl, cv::getStructuringElement(cv::MORPH_RECT, cv::Size(2, 2)));
         cv::dilate(tmpl, tmpl, cv::getStructuringElement(cv::MORPH_RECT, cv::Size(2, 2)));
         cv::resize(tmpl, tmpl, cv::Size(28, 44));
+        cv::threshold(tmpl, tmpl, 128, 255, cv::THRESH_BINARY);
         letter_templates_[i] = tmpl;
         letter_contours_[i] = extractMainContour(tmpl);
+    }
+
+    // Precompute letter features
+    letter_holes_.resize(26);
+    letter_aspects_.resize(26);
+    letter_fills_.resize(26);
+    for (int i = 0; i < 26; ++i) {
+        letter_holes_[i] = countHoles(letter_templates_[i]);
+        letter_aspects_[i] = (double)letter_templates_[i].rows / letter_templates_[i].cols;
+        letter_fills_[i] = (double)cv::countNonZero(letter_templates_[i]) /
+                           (letter_templates_[i].rows * letter_templates_[i].cols);
     }
 }
 
@@ -118,15 +148,62 @@ cv::Mat PlateRecognizer::preprocess(const cv::Mat& src) {
 
 // ========== Detect plate candidates ==========
 std::vector<cv::Rect> PlateRecognizer::detectPlateCandidates(const cv::Mat& src) {
-    std::vector<cv::Rect> candidates;
-    cv::Mat processed = preprocess(src);
+    // === Primary: HSV color detection (blue/green plates) ===
+    cv::Mat hsv;
+    cv::cvtColor(src, hsv, cv::COLOR_BGR2HSV);
 
-    std::vector<std::vector<cv::Point>> contours;
-    std::vector<cv::Vec4i> hierarchy;
-    cv::findContours(processed.clone(), contours, hierarchy,
+    // Relaxed thresholds to catch more candidates
+    cv::Mat blue_mask, green_mask;
+    cv::inRange(hsv, cv::Scalar(100, 50, 40), cv::Scalar(124, 255, 255), blue_mask);
+    cv::inRange(hsv, cv::Scalar(35, 50, 40), cv::Scalar(77, 255, 255), green_mask);
+
+    cv::Mat color_mask = blue_mask | green_mask;
+
+    // Morphological cleanup: connect nearby blue/green regions
+    cv::Mat kernel5 = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5, 5));
+    cv::morphologyEx(color_mask, color_mask, cv::MORPH_CLOSE, kernel5);
+    cv::morphologyEx(color_mask, color_mask, cv::MORPH_OPEN, kernel5);
+
+    std::vector<std::vector<cv::Point>> color_contours;
+    cv::findContours(color_mask.clone(), color_contours,
                      cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
 
-    for (const auto& contour : contours) {
+    std::vector<cv::Rect> hsv_candidates;
+    for (const auto& cc : color_contours) {
+        double area = cv::contourArea(cc);
+        if (area < 800 || area > 60000) continue;
+
+        cv::RotatedRect rr = cv::minAreaRect(cc);
+        float w = rr.size.width, h = rr.size.height;
+        if (w < h) std::swap(w, h);
+
+        double asp = w / h;
+        if (asp < 1.2 || asp > 5.0) continue;  // wider range for color detection
+
+        cv::Rect br = rr.boundingRect();
+        // Expand slightly to include plate border
+        int mx = std::max(1, (int)(br.width * 0.1));
+        int my = std::max(1, (int)(br.height * 0.1));
+        br.x = std::max(0, br.x - mx);
+        br.y = std::max(0, br.y - my);
+        br.width = std::min(src.cols - br.x, br.width + 2 * mx);
+        br.height = std::min(src.rows - br.y, br.height + 2 * my);
+
+        hsv_candidates.push_back(br);
+    }
+
+    std::cerr << "[DBG] detectPlateCandidates: " << hsv_candidates.size()
+              << " HSV candidates\n";
+
+    // === Supplementary: edge detection (for non-blue/green plates) ===
+    cv::Mat processed = preprocess(src);
+    std::vector<std::vector<cv::Point>> edge_contours;
+    std::vector<cv::Vec4i> hierarchy;
+    cv::findContours(processed.clone(), edge_contours, hierarchy,
+                     cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+
+    std::vector<cv::Rect> edge_candidates;
+    for (const auto& contour : edge_contours) {
         double area = cv::contourArea(contour);
         if (area < 1000 || area > 50000) continue;
 
@@ -142,44 +219,36 @@ std::vector<cv::Rect> PlateRecognizer::detectPlateCandidates(const cv::Mat& src)
         double extent = area / rect_area;
         if (extent < 0.4) continue;
 
-        candidates.push_back(rect.boundingRect());
+        edge_candidates.push_back(rect.boundingRect());
     }
 
+    std::cerr << "[DBG] detectPlateCandidates: " << edge_candidates.size()
+              << " edge candidates\n";
+
+    // === Merge: HSV candidates first, then non-overlapping edge candidates ===
+    std::vector<cv::Rect> candidates = hsv_candidates;
+
+    for (const auto& ec : edge_candidates) {
+        bool duplicate = false;
+        for (const auto& hc : hsv_candidates) {
+            cv::Rect inter = ec & hc;
+            if (inter.width > 0 && inter.height > 0) {
+                double overlap = (double)inter.area() / std::min(ec.area(), hc.area());
+                if (overlap > 0.3) {
+                    duplicate = true;
+                    break;
+                }
+            }
+        }
+        if (!duplicate)
+            candidates.push_back(ec);
+    }
+
+    // Sort by area descending
     std::sort(candidates.begin(), candidates.end(),
         [](const cv::Rect& a, const cv::Rect& b) {
             return a.area() > b.area();
         });
-
-    if (candidates.empty()) {
-        cv::Mat hsv;
-        cv::cvtColor(src, hsv, cv::COLOR_BGR2HSV);
-
-        cv::Mat blue_mask, green_mask;
-        cv::inRange(hsv, cv::Scalar(100, 80, 60), cv::Scalar(124, 255, 255), blue_mask);
-        cv::inRange(hsv, cv::Scalar(35, 80, 60), cv::Scalar(77, 255, 255), green_mask);
-
-        cv::Mat color_mask = blue_mask | green_mask;
-        cv::morphologyEx(color_mask, color_mask,
-            cv::MORPH_CLOSE, cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5, 5)));
-
-        std::vector<std::vector<cv::Point>> color_contours;
-        cv::findContours(color_mask.clone(), color_contours,
-                         cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-
-        for (const auto& cc : color_contours) {
-            double area = cv::contourArea(cc);
-            if (area < 1000 || area > 50000) continue;
-
-            cv::RotatedRect rr = cv::minAreaRect(cc);
-            float w = rr.size.width, h = rr.size.height;
-            if (w < h) std::swap(w, h);
-
-            double asp = w / h;
-            if (asp < 1.8 || asp > 4.5) continue;
-
-            candidates.push_back(rr.boundingRect());
-        }
-    }
 
     return candidates;
 }
@@ -221,7 +290,7 @@ static cv::Mat preprocessPlateRegion(const cv::Mat& plate_color) {
     cv::Mat resized;
     cv::resize(gray, resized, cv::Size(target_width, target_height));
 
-    cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(3.0, cv::Size(8, 8));
+    cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(2.0, cv::Size(10, 10));
     cv::Mat enhanced;
     clahe->apply(resized, enhanced);
 
@@ -238,7 +307,7 @@ static cv::Mat binarizePlate(const cv::Mat& gray) {
 
     cv::Mat adapt_bin;
     cv::adaptiveThreshold(gray, adapt_bin, 255,
-        cv::ADAPTIVE_THRESH_GAUSSIAN_C, cv::THRESH_BINARY_INV, 15, 4);
+        cv::ADAPTIVE_THRESH_GAUSSIAN_C, cv::THRESH_BINARY_INV, 15, 6);
 
     int otsu_pixels = cv::countNonZero(otsu_bin);
     int adapt_pixels = cv::countNonZero(adapt_bin);
@@ -247,14 +316,20 @@ static cv::Mat binarizePlate(const cv::Mat& gray) {
     double adapt_ratio = (double)adapt_pixels / total;
 
     cv::Mat best_bin;
-    if (std::abs(otsu_ratio - 0.25) < std::abs(adapt_ratio - 0.25))
+    if (std::abs(otsu_ratio - 0.25) < std::abs(adapt_ratio - 0.25)) {
         best_bin = otsu_bin;
-    else
+        std::cerr << "[DBG] binarizePlate: chose OTSU (ratio=" << otsu_ratio << ")\n";
+    } else {
         best_bin = adapt_bin;
+        std::cerr << "[DBG] binarizePlate: chose ADAPTIVE (ratio=" << adapt_ratio << ")\n";
+    }
 
-    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(2, 2));
+    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
     cv::morphologyEx(best_bin, best_bin, cv::MORPH_OPEN, kernel);
     cv::morphologyEx(best_bin, best_bin, cv::MORPH_CLOSE, kernel);
+
+    std::cerr << "[DBG] binarizePlate: output " << cv::countNonZero(best_bin) << "/" << total
+              << " white pixels (" << (100.0*cv::countNonZero(best_bin)/total) << "%)\n";
 
     return best_bin;
 }
@@ -290,6 +365,16 @@ std::vector<cv::Mat> PlateRecognizer::segmentCharacters(const cv::Mat& plate_img
     cv::Mat processed = preprocessPlateRegion(plate_img);
     cv::Mat binary = binarizePlate(processed);
 
+    // 确保白色文字在黑色背景上（THRESH_BINARY_INV 对蓝色车牌产生黑字白底）
+    // findContours 查找白色前景，需要文字为白色、背景为黑色
+    int n_white = cv::countNonZero(binary);
+    std::cerr << "[DBG] segmentCharacters: binary has " << n_white << "/" << (binary.rows*binary.cols)
+              << " white pixels before polarity fix\n";
+    if (n_white > binary.rows * binary.cols * 0.5) {
+        cv::bitwise_not(binary, binary);
+        std::cerr << "[DBG] segmentCharacters: polarity inverted\n";
+    }
+
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(binary.clone(), contours,
                      cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
@@ -297,6 +382,8 @@ std::vector<cv::Mat> PlateRecognizer::segmentCharacters(const cv::Mat& plate_img
     std::vector<std::pair<cv::Rect, double>> valid_chars;
     int plate_height = binary.rows;
     int plate_width = binary.cols;
+
+    std::cerr << "[DBG] segmentCharacters: " << contours.size() << " contours found\n";
 
     for (size_t i = 0; i < contours.size(); ++i) {
         cv::Rect br = cv::boundingRect(contours[i]);
@@ -306,10 +393,10 @@ std::vector<cv::Mat> PlateRecognizer::segmentCharacters(const cv::Mat& plate_img
         if (br.width > plate_width / 2) continue;
 
         double char_aspect = (double)br.height / br.width;
-        if (char_aspect < 0.8 || char_aspect > 6.0) continue;
+        if (char_aspect < 0.8 || char_aspect > 12.0) continue;
 
         double area_ratio = (double)cv::contourArea(contours[i]) / br.area();
-        if (area_ratio < 0.1) continue;
+        if (area_ratio < 0.12) continue;
 
         valid_chars.push_back({br, (double)br.x});
     }
@@ -335,6 +422,11 @@ std::vector<cv::Mat> PlateRecognizer::segmentCharacters(const cv::Mat& plate_img
         if (!merged_flag)
             merged.push_back(r);
     }
+
+    std::cerr << "[DBG] segmentCharacters: " << merged.size() << " chars after merge\n";
+    for (size_t i = 0; i < merged.size(); ++i)
+        std::cerr << "[DBG]   char " << i << ": " << merged[i].width << "x" << merged[i].height
+                  << " at (" << merged[i].x << "," << merged[i].y << ")\n";
 
     for (const auto& r : merged) {
         cv::Mat char_img = binary(r).clone();
@@ -365,66 +457,127 @@ std::vector<cv::Mat> PlateRecognizer::segmentCharacters(const cv::Mat& plate_img
     return chars;
 }
 
-// ========== Match a single character using Hu moments (shape matching) ==========
+// ========== Match a single character using multi-feature fusion ==========
 char PlateRecognizer::matchCharacter(const cv::Mat& char_img, double& conf) {
     conf = 0.0;
 
     if (!templates_initialized_)
         initTemplates();
 
+    // Threshold to pure binary to remove resize interpolation artifacts
+    cv::Mat work;
+    cv::threshold(char_img, work, 100, 255, cv::THRESH_BINARY);
+
+    // Normalize polarity: templates are white-on-black (character=255, bg=0).
+    // THRESH_BINARY_INV for blue plates produces black-on-white → need inversion.
+    // A properly cropped char fills ~20-45% in white-on-black mode, so if
+    // white pixels exceed 55%, the polarity is inverted.
+    if (cv::countNonZero(work) > work.rows * work.cols * 0.55)
+        cv::bitwise_not(work, work);
+
     // Extract the contour of the input character
-    std::vector<cv::Point> input_contour = extractMainContour(char_img);
+    std::vector<cv::Point> input_contour = extractMainContour(work);
     if (input_contour.empty()) return '?';
 
-    // Count holes as a topological feature
-    int input_holes = countHoles(char_img);
+    // Compute input features
+    int input_holes = countHoles(work);
+    double input_aspect = (double)work.rows / work.cols;
+    double input_fill = (double)cv::countNonZero(work) /
+                        (work.rows * work.cols);
 
-    double best_score = std::numeric_limits<double>::max();
-    int best_idx = -1;
-    char best_type = '?';
+    struct Candidate {
+        int idx;
+        char type;   // 'd' = digit, 'l' = letter
+        double shape_score;
+        double ncc_score;
+        int hole_diff;
+        double aspect_diff;
+        double fill_diff;
+    };
+    std::vector<Candidate> candidates;
 
-    // Compare against digit contours using Hu moments
+    // Compare against digit templates
     for (int d = 0; d < 10; ++d) {
         if (digit_contours_[d].empty()) continue;
 
-        // Filter by hole count first (fast rejection)
-        int tmpl_holes = countHoles(digit_templates_[d]);
-        if (input_holes != tmpl_holes) continue;
+        double shape_score = cv::matchShapes(input_contour, digit_contours_[d],
+                                              cv::CONTOURS_MATCH_I3, 0);
 
-        double score = cv::matchShapes(input_contour, digit_contours_[d],
-                                        cv::CONTOURS_MATCH_I3, 0);
-        if (score < best_score) {
-            best_score = score;
-            best_idx = d;
-            best_type = 'd';
-        }
+        cv::Mat ncc_result;
+        cv::matchTemplate(work, digit_templates_[d], ncc_result, cv::TM_CCOEFF_NORMED);
+        double ncc_score = ncc_result.at<float>(0, 0);
+
+        candidates.push_back({d, 'd', shape_score, ncc_score,
+                             abs(input_holes - digit_holes_[d]),
+                             std::abs(input_aspect - digit_aspects_[d]),
+                             std::abs(input_fill - digit_fills_[d])});
     }
 
-    // Compare against letter contours
+    // Compare against letter templates
     for (int l = 0; l < 26; ++l) {
         if (letter_contours_[l].empty()) continue;
 
-        int tmpl_holes = countHoles(letter_templates_[l]);
-        if (input_holes != tmpl_holes) continue;
+        double shape_score = cv::matchShapes(input_contour, letter_contours_[l],
+                                              cv::CONTOURS_MATCH_I3, 0);
 
-        double score = cv::matchShapes(input_contour, letter_contours_[l],
-                                        cv::CONTOURS_MATCH_I3, 0);
-        if (score < best_score) {
-            best_score = score;
-            best_idx = l;
-            best_type = 'l';
+        cv::Mat ncc_result;
+        cv::matchTemplate(work, letter_templates_[l], ncc_result, cv::TM_CCOEFF_NORMED);
+        double ncc_score = ncc_result.at<float>(0, 0);
+
+        candidates.push_back({l, 'l', shape_score, ncc_score,
+                             abs(input_holes - letter_holes_[l]),
+                             std::abs(input_aspect - letter_aspects_[l]),
+                             std::abs(input_fill - letter_fills_[l])});
+    }
+
+    if (candidates.empty()) return '?';
+
+    // Rank-based fusion: for each metric, rank all candidates (lower rank = better)
+    auto rankBy = [&](auto proj) -> std::vector<int> {
+        std::vector<int> idx(candidates.size());
+        for (size_t i = 0; i < candidates.size(); ++i) idx[i] = i;
+        std::sort(idx.begin(), idx.end(), [&](int a, int b) {
+            return proj(candidates[a]) < proj(candidates[b]);
+        });
+        std::vector<int> ranks(candidates.size());
+        for (size_t i = 0; i < idx.size(); ++i)
+            ranks[idx[i]] = (int)i;
+        return ranks;
+    };
+
+    auto shape_ranks  = rankBy([](const Candidate& c) { return c.shape_score; });
+    auto ncc_ranks    = rankBy([](const Candidate& c) { return -c.ncc_score; }); // higher NCC = better
+    auto hole_ranks   = rankBy([](const Candidate& c) { return (double)c.hole_diff; });
+    auto aspect_ranks = rankBy([](const Candidate& c) { return c.aspect_diff; });
+    auto fill_ranks   = rankBy([](const Candidate& c) { return c.fill_diff; });
+
+    // Weighted rank sum: shape=0.20, NCC=0.35, hole=0.20, aspect=0.10, fill=0.15
+    int best_idx = -1;
+    double best_score = std::numeric_limits<double>::max();
+    size_t n = candidates.size();
+
+    for (size_t i = 0; i < n; ++i) {
+        double combined =
+            0.20 * shape_ranks[i] / n +
+            0.35 * ncc_ranks[i] / n +
+            0.20 * hole_ranks[i] / n +
+            0.10 * aspect_ranks[i] / n +
+            0.15 * fill_ranks[i] / n;
+
+        if (combined < best_score) {
+            best_score = combined;
+            best_idx = (int)i;
         }
     }
 
-    // Convert matchShapes score to a confidence (0~1)
-    // matchShapes returns 0 for perfect match, higher for worse match
-    conf = std::max(0.0, 1.0 - best_score * 5.0);
+    if (best_idx < 0) return '?';
 
-    if (best_idx >= 0) {
-        if (best_type == 'd') return '0' + best_idx;
-        else return 'A' + best_idx;
-    }
-    return '?';
+    // Convert best_score (0~1, lower=better) to confidence (0~1, higher=better)
+    conf = std::max(0.0, 1.0 - best_score * 1.5);
+
+    const auto& best = candidates[best_idx];
+    if (best.type == 'd') return '0' + best.idx;
+    else return 'A' + best.idx;
 }
 
 // ========== Recognize characters on plate ==========
@@ -432,7 +585,7 @@ std::string PlateRecognizer::recognizeCharacters(const cv::Mat& plate_img, doubl
     confidence = 0.0;
 
     std::vector<cv::Mat> chars = segmentCharacters(plate_img);
-    if (chars.size() < 5) {
+    if (chars.size() < 3) {
         return "";
     }
 
@@ -513,7 +666,7 @@ PlateRecognizer::RecognitionResult PlateRecognizer::recognize(const cv::Mat& fra
         }
     }
 
-    if (clean_plate.size() < 5) {
+    if (clean_plate.size() < 3) {
         result.message = "识别结果不完整: " + raw_plate;
         result.plate_number = raw_plate;
         result.confidence = confidence;

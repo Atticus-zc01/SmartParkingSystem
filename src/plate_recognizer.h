@@ -40,6 +40,12 @@ private:
     std::vector<cv::Mat> letter_templates_;
     std::vector<std::vector<cv::Point>> digit_contours_;
     std::vector<std::vector<cv::Point>> letter_contours_;
+    std::vector<int> digit_holes_;
+    std::vector<int> letter_holes_;
+    std::vector<double> digit_aspects_;
+    std::vector<double> letter_aspects_;
+    std::vector<double> digit_fills_;
+    std::vector<double> letter_fills_;
     bool templates_initialized_ = false;
 
     // Base64 helper
