@@ -46,6 +46,7 @@ private:
 
     // Character set (populated based on num_classes)
     std::vector<std::string> charset_;
+    int blank_idx_ = -1;       // index of CTC blank (last class)
     void initCharset(int num_classes);
 
     // Buffer for detecting output shape

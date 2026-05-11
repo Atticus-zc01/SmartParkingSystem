@@ -109,74 +109,34 @@ bool LPRRecognizer::probeModel() {
 }
 
 void LPRRecognizer::initCharset(int num_classes) {
-    // 31 Chinese province abbreviations
-    static const std::string provinces[] = {
+    // LPRNet_Pytorch character set (also used by RKNN model zoo).
+    // NO blank at index 0 — the last class (dash '-' at 67) is the CTC blank.
+    // Order: 31 provinces, 10 digits, 24 letters + I + O + dash.
+    static const std::string LPR_CHARS[] = {
         "京", "沪", "津", "渝", "冀", "晋", "蒙", "辽", "吉", "黑",
         "苏", "浙", "皖", "闽", "赣", "鲁", "豫", "鄂", "湘", "粤",
-        "桂", "琼", "川", "贵", "云", "藏", "陕", "甘", "青", "宁", "新"
+        "桂", "琼", "川", "贵", "云", "藏", "陕", "甘", "青", "宁", "新",
+        "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+        "A", "B", "C", "D", "E", "F", "G", "H", "J", "K",
+        "L", "M", "N", "P", "Q", "R", "S", "T", "U", "V",
+        "W", "X", "Y", "Z", "I", "O", "-"
     };
-    // Digits
-    static const char digits[] = "0123456789";
-    // Letters (excluding I, O as per Chinese plate standard)
-    static const char letters[] = "ABCDEFGHJKLMNPQRSTUVWXYZ";
-    // Special plate types
-    static const std::string special[] = {
-        "挂", "学", "警", "港", "澳", "使", "领"
-    };
+    static const int LPR_NUM = sizeof(LPR_CHARS) / sizeof(LPR_CHARS[0]);
 
     charset_.clear();
-    // Index 0 is CTC blank
-    charset_.push_back("");
-
-    int expected_67 = 31 + 10 + 24 + 2;   // 67 chars (+ blank = 68)
-    int expected_70 = 31 + 10 + 24 + 5;   // 70 chars (+ blank = 71)
-    int expected_72 = 31 + 10 + 24 + 7;   // 72 chars (+ blank = 73)
-
-    // Add provinces
-    for (const auto& p : provinces)
-        charset_.push_back(p);
-
-    // Add digits
-    for (int i = 0; digits[i]; i++)
-        charset_.push_back(std::string(1, digits[i]));
-
-    // Add letters
-    for (int i = 0; letters[i]; i++)
-        charset_.push_back(std::string(1, letters[i]));
-
-    // Add special chars based on available space
-    // num_classes includes blank at index 0
-    int chars_needed = num_classes - 1;
-    int chars_added = (int)charset_.size() - 1; // minus blank
-
-    if (chars_needed >= 68) {
-        // Need at least 挂 学
-        for (int i = 0; i < 2 && chars_added < chars_needed; i++) {
-            charset_.push_back(special[i]);
-            chars_added++;
-        }
-    }
-    if (chars_needed >= 70) {
-        // Also 警 港 澳
-        for (int i = 2; i < 5 && chars_added < chars_needed; i++) {
-            charset_.push_back(special[i]);
-            chars_added++;
-        }
-    }
-    if (chars_needed >= 72) {
-        // Also 使 领
-        for (int i = 5; i < 7 && chars_added < chars_needed; i++) {
-            charset_.push_back(special[i]);
-            chars_added++;
-        }
+    for (int i = 0; i < LPR_NUM; i++) {
+        charset_.push_back(LPR_CHARS[i]);
     }
 
-    // Pad with empty strings if needed (shouldn't happen)
+    // Pad with spaces if the model has more classes (e.g., 71 or 73)
     while ((int)charset_.size() < num_classes)
-        charset_.push_back("?");
+        charset_.push_back(" ");
+
+    // CTC blank is always the last class in LPRNet models
+    blank_idx_ = num_classes - 1;
 
     std::cerr << "[LPR] Charset initialized: " << charset_.size()
-              << " entries (blank + " << (charset_.size() - 1) << " chars)\n";
+              << " entries, blank_idx=" << blank_idx_ << "\n";
 }
 
 cv::Mat LPRRecognizer::preprocess(const cv::Mat& plate_bgr) {
@@ -194,9 +154,9 @@ cv::Mat LPRRecognizer::preprocess(const cv::Mat& plate_bgr) {
     cv::Mat three_channel;
     cv::cvtColor(resized, three_channel, cv::COLOR_GRAY2BGR);
 
-    // Create blob: scale 1/255, no mean subtraction
-    cv::Mat blob = cv::dnn::blobFromImage(three_channel, 1.0 / 255.0,
-        cv::Size(input_width_, input_height_), cv::Scalar(), false);
+    // Create blob: normalize to [-1, 1] as expected by LPRNet: (img - 127.5) / 127.5
+    cv::Mat blob = cv::dnn::blobFromImage(three_channel, 1.0 / 127.5,
+        cv::Size(input_width_, input_height_), cv::Scalar(127.5, 127.5, 127.5), false);
 
     return blob;
 }
@@ -239,8 +199,15 @@ std::string LPRRecognizer::ctcDecode(const cv::Mat& output, double& confidence) 
             }
         }
 
-        // Skip blank (index 0)
-        if (max_idx == 0)
+        // Compute softmax probability for the predicted class
+        double exp_sum = 0.0;
+        for (int c = 0; c < num_classes; c++) {
+            exp_sum += std::exp(data[c * time_steps + t] - max_val);
+        }
+        double softmax_prob = std::exp(data[max_idx * time_steps + t] - max_val) / exp_sum;
+
+        // Skip blank (last class, typically '-' at index 67)
+        if (max_idx == blank_idx_)
             continue;
 
         // Collapse consecutive repeats (CTC merge)
@@ -252,7 +219,7 @@ std::string LPRRecognizer::ctcDecode(const cv::Mat& output, double& confidence) 
         // Map to character
         if (max_idx < (int)charset_.size() && !charset_[max_idx].empty()) {
             result += charset_[max_idx];
-            total_prob += max_val;
+            total_prob += softmax_prob;
             valid_steps++;
         }
     }

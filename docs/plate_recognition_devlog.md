@@ -147,6 +147,29 @@
 
 ---
 
+### 第 5.1 版 — Bug 修复：字符集、归一化、置信度
+
+**目标**: 修复"全都识别错"和"置信度 2000%"问题
+
+**根因**（三个独立 Bug）:
+
+1. **输入归一化错误**: `blobFromImage(1.0/255.0)` 使用 [0,1] 范围，LPRNet 期望 (img-127.5)/127.5（[-1,1] 范围）
+2. **置信度未 Softmax**: raw logit 直接当作概率值返回，可任意大或为负
+3. **字符集顺序完全错误**:
+   - index 0 = CTC blank → 所有字符索引偏移 +1
+   - 排除了 I/O 字母，加入了 "挂/学" 特殊字符
+   - 68 类模型的 special char 条件 `chars_needed >= 68` 为 false → 最后 2 个索引填充为 `?`
+   - 实际 LPRNet_Pytorch 标准字符集：31省份 + 10数字 + 24字母 + I + O + `-`(dash)，CTC blank 在最后一个 class
+
+**修复**:
+- `preprocess()`: `1.0/255.0` → `1.0/127.5`，mean=127.5
+- `ctcDecode()`: max_val → softmax（log-sum-exp 稳定计算）
+- `initCharset()`: 完全重写为 LPRNet_Pytorch 标准字符集，`blank_idx_` = last class
+
+**结果**: ✅ 字符映射正确（之前 `?8?7A?3?V?H?` → 现在 `98B4WJ`），置信度归一化为 0-1
+
+---
+
 ## 架构说明
 
 ```

@@ -203,14 +203,44 @@
 返回 JSON: { plate_number, confidence, color, registration: {...} }
 ```
 
+### 提交记录
+- `9b7545d` — feat: 集成 LPRNet ONNX 深度学习车牌识别模型
+
+---
+
+## 第九阶段：LPRNet Bug 修复（全部识别错误）
+
+### 现象
+
+用户反馈："有识别内容了，但是全都识别错，没有一个识别对的，而且置信度有时候2000%，有时候-770%"
+
+### 根因分析
+
+三个独立 Bug：
+
+1. **输入归一化错误**: `blobFromImage` 使用了 `scale=1/255`（[0,1] 范围），但 LPRNet 期望 `(img - 127.5) / 127.5`（[-1,1] 范围）。模型接收的像素值与训练时完全不同 → 输出随机预测
+
+2. **置信度未经过 Softmax**: 直接使用模型输出的 raw logit 作为置信度。Logit 可以是任意值（负值、大于1），导致置信度出现 -770% 或 2000%
+
+3. **字符集顺序完全错误**:
+   - 旧实现：index 0 = CTC blank → 所有字符索引偏移 +1
+   - 旧实现：排除 I/O 字母，加入 "挂/学" 特殊字符
+   - 旧实现：68 类模型的 special char 条件 `>= 68` 不满足 → 最后 2 个字符填充为 `?`
+   - 正确：LPRNet_Pytorch 标准字符集 = 31省份 + 10数字 + 24字母 + I + O + `-`(dash)，CTC blank 在 index 67（最后一个 class）
+
+### 修复措施
+
+1. **`preprocess()`**: `blobFromImage(1.0/255.0, Scalar())` → `blobFromImage(1.0/127.5, Scalar(127.5,127.5,127.5))`
+2. **`ctcDecode()`**: max_val → softmax = exp(logit - max_logit) / sum(exp(...))
+3. **`initCharset()`**: 完全重写为 LPRNet_Pytorch 标准字符集，`blank_idx_` = last class
+
+### 文件变更
+
+| 文件 | 变更 |
+|------|------|
+| `src/lpr_recognizer.h` | 添加 `blank_idx_` 成员 |
+| `src/lpr_recognizer.cpp` | 重写 `initCharset()`、修复归一化、添加 softmax |
+
+---
+
 ## 当前局限
-
-- LPRNet 对倾斜角度过大或严重模糊的车牌识别率下降
-- HSV 检测在夜间低光照条件下可能漏检车牌区域
-- 未针对双行车牌优化
-- 68 字符模型可升级到 71 字符版（增加港/澳等特殊车牌）
-
-## 后续优化方向
-
-- YuNet LPD ONNX 替换 HSV 检测，提升倾斜/暗光鲁棒性
-- TensorRT INT8 量化加速推理
