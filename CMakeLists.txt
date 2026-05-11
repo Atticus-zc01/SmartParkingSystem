@@ -10,7 +10,7 @@ if(MSVC)
 endif()
 
 # Find OpenCV (required for plate recognition)
-find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs highgui)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs highgui dnn)
 if(OpenCV_FOUND)
     message(STATUS "OpenCV found: ${OpenCV_VERSION}")
     include_directories(${OpenCV_INCLUDE_DIRS})
@@ -74,7 +74,7 @@ else()
     )
 endif()
 
-# Copy frontend and config files to build directory
+# Copy frontend, config, and models to build directory
 add_custom_command(TARGET smart_parking POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_SOURCE_DIR}/frontend
@@ -82,6 +82,9 @@ add_custom_command(TARGET smart_parking POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_SOURCE_DIR}/config
         $<TARGET_FILE_DIR:smart_parking>/config
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/models
+        $<TARGET_FILE_DIR:smart_parking>/models
 )
 
 # Windows: copy MySQL DLL

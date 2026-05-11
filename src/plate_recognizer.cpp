@@ -1,4 +1,5 @@
 #include "plate_recognizer.h"
+#include "lpr_recognizer.h"
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <iostream>
@@ -9,6 +10,17 @@
 PlateRecognizer& PlateRecognizer::instance() {
     static PlateRecognizer inst;
     return inst;
+}
+
+static std::string lpr_model_path;
+
+void PlateRecognizer::setLPRModelPath(const std::string& path) {
+    lpr_model_path = path;
+    if (!path.empty()) {
+        bool ok = LPRRecognizer::instance().load(path);
+        std::cerr << "[PlateRecognizer] LPR model " << (ok ? "loaded" : "FAILED")
+                  << ": " << path << "\n";
+    }
 }
 
 // ========== Base64 Decode ==========
@@ -651,7 +663,22 @@ PlateRecognizer::RecognitionResult PlateRecognizer::recognize(const cv::Mat& fra
     result.plate_color = analyzePlateColor(plate_region);
 
     double confidence = 0.0;
-    std::string raw_plate = recognizeCharacters(plate_region, confidence);
+    std::string raw_plate;
+
+    // Use LPRNet deep learning model if available
+    if (LPRRecognizer::instance().isLoaded()) {
+        LPRRecognizer::Result lpr_result = LPRRecognizer::instance().recognize(plate_region);
+        raw_plate = lpr_result.plate;
+        confidence = lpr_result.confidence;
+        if (!raw_plate.empty()) {
+            std::cerr << "[DBG] LPRNet: " << raw_plate << " (conf=" << confidence << ")\n";
+        }
+    }
+
+    // Fall back to template matching if LPR didn't produce a result
+    if (raw_plate.empty()) {
+        raw_plate = recognizeCharacters(plate_region, confidence);
+    }
 
     if (raw_plate.empty()) {
         result.message = "检测到车牌区域但无法识别字符";

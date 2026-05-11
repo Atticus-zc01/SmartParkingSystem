@@ -15,6 +15,7 @@
 #include "controller/bulletin_controller.h"
 #include "permissions.h"
 #include "service/auth_service.h"
+#include "plate_recognizer.h"
 
 #include <iostream>
 #include <fstream>
@@ -110,6 +111,15 @@ int main() {
             // Initialize database pool
             if (MySQLPool::instance().init(AppConfig::instance())) {
                 std::cout << "[OK] 数据库连接成功\n";
+
+                // Initialize LPRNet deep learning model for license plate recognition
+                std::string model_path = "models/lprnet.onnx";
+                if (fs::exists(model_path)) {
+                    PlateRecognizer::setLPRModelPath(model_path);
+                } else {
+                    std::cout << "[WARN] LPRNet 模型未找到: " << model_path << "\n";
+                    std::cout << "[WARN] 车牌识别将回退到模板匹配模式\n";
+                }
             } else {
                 std::cout << "[WARN] 数据库连接失败，请检查配置\n";
                 initialized = false;

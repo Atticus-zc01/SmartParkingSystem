@@ -17,6 +17,9 @@ public:
     RecognitionResult recognize(const std::string& image_base64);
     RecognitionResult recognize(const cv::Mat& frame);
 
+    // Set path to LPRNet ONNX model for deep-learning recognition
+    static void setLPRModelPath(const std::string& path);
+
 private:
     PlateRecognizer() = default;
 
