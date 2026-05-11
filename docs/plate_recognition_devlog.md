@@ -109,6 +109,44 @@
 
 ---
 
+### 第 5 版 — LPRNet 深度学习车牌识别（当前）
+
+**目标**: 用手写 CV + Hu 矩替换为端到端深度学习模型
+
+**根因**:
+- Hershey 字体模板匹配根本不支持汉字（永远输出 `?`）
+- 字符分割对二值化质量极其敏感，真实场景光照变化大
+- CV 管线已达天花板，无论怎么调参也无法达到可用准确率
+
+**方案**: 使用 LPRNet（轻量级 CNN + CTC）端到端车牌识别
+
+**改进**:
+- 新建 `src/lpr_recognizer.h/.cpp` — LPRNet 推理类
+  - 自动探测模型输入/输出维度（94×24 输入, 68 类×18 时间步输出）
+  - OpenCV DNN 加载 ONNX 模型，无额外依赖
+  - CTC 贪婪解码（argmax → 合并重复 → 去空白 → 映射字符）
+  - 支持 31 个省份汉字 + 字母 + 数字 + 特殊车牌
+- 下载 `lprnet.onnx` 预训练模型（1.7MB，CCPD 数据集训练）
+- `recognize()` 优先使用 LPRNet 推理，失败时降级到模板匹配
+- CMake 添加 `dnn` 模块支持，构建时自动复制模型
+
+**LPRNet 优势**:
+- 端到端识别，无需字符分割 ✓
+- 支持中文省份字符（京/沪/粤/苏等 31 省）✓
+- CCPD 数据集准确率 ~95% ✓
+- CPU 推理 1-3ms ✓
+- OpenCV DNN 加载，无额外依赖 ✓
+
+**关键文件**:
+- `src/lpr_recognizer.h` — LPRNet 单例类定义
+- `src/lpr_recognizer.cpp` — 预处理 / 推理 / CTC 解码实现
+- `models/lprnet.onnx` — 预训练 ONNX 模型
+- `models/` — 构建时自动复制到可执行目录
+
+**结果**: ✅ 深度学习管线集成完成，应能正确定位车牌并识别含中文的完整车牌号
+
+---
+
 ## 架构说明
 
 ```
@@ -122,28 +160,28 @@
     analyzePlateColor() → 蓝/绿/黄牌识别
     ↓
     recognizeCharacters():
-        ├─ preprocessPlateRegion() → CLAHE + 缩放 + 高斯模糊
-        ├─ binarizePlate() → Otsu/自适应阈值自动选优
-        ├─ segmentCharacters() → 轮廓法分割 + 重叠合并
-        └─ matchCharacter() → Hu矩形状匹配 + 孔洞数过滤
+        ├─ [主] LPRNet 深度学习 (94×24 → ONNX推理 → CTC解码)
+        │   ├─ 支持 31 省汉字 + 字母 + 数字
+        │   └─ 端到端识别，无需分割
+        └─ [辅] 模板匹配降级 (Hu矩 + NCC + 孔洞数融合)
     ↓
     PlateService.checkRegistration() → 四表联合查询
-        ├─ CAR_RECORD (是否曾有入场记录/当前是否在场)
-        ├─ MONTHLY_PASS (月卡是否有效)
-        └─ VEHICLE_BLACKLIST (是否黑名单)
+        ├─ CAR_RECORD (入场记录/是否在场)
+        ├─ MONTHLY_PASS (月卡有效期)
+        └─ VEHICLE_BLACKLIST (黑名单)
     ↓
 返回 JSON: { plate_number, confidence, color, registration: {...} }
 ```
 
 ## 当前局限
 
-1. 中文省份字符无法识别 (输出 `?` 占位) — 需 ML 模型
-2. 对倾斜角度过大、光照极差的车牌仍然不可靠
-3. 字符分割依赖二值化质量，复杂背景可能引入噪点
-4. 仅使用 OpenCV 内置功能，没有训练数据
+1. **倾斜/模糊车牌** — LPRNet 对角度过大或严重模糊的车牌识别率下降
+2. **夜间低光照** — HSV 检测在光线不足时可能漏检车牌区域
+3. **双行车牌** — 当前检测管线未针对双行车牌优化
+4. **模型精度** — 68 字符 LPRNet 模型可升级到更优版本（如 71 字符版）
 
-## 未来可集成方案
+## 后续优化方向
 
-- **EasyPR** — 专为中国车牌设计的开源识别库，支持中文省份字符
-- **PaddleOCR** — 百度飞桨 OCR 引擎，支持端到端车牌识别
-- **自定义 CNN** — 训练专用车牌字符分类器
+- **YuNet LPD ONNX** — 替换 HSV 检测为深度学习检测，提升倾斜/暗光场景
+- **更高精度模型** — 升级到 71 字符 LPRNet 或 CRNN 模型
+- **TensorRT 加速** — 使用 INT8 量化提升推理速度

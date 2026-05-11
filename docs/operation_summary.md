@@ -130,7 +130,52 @@
 ### 提交记录
 
 - `61c655b` — docs: 添加完整操作步骤总结文档
-- `[当前提交]` — fix: 修复车牌识别极性错误并重构检测管线
+- `0df6ddf` — fix: 修复车牌识别极性错误并重构检测管线
+
+---
+
+## 第八阶段：集成 LPRNet 深度学习车牌识别
+
+### 背景
+
+手写 CV 管线（Hu 矩 + NCC + 孔洞数）的准确率有上限：
+- Hershey 字体根本不包含汉字 → 中文省份永远输出 `?`
+- 字符分割对二值化质量极度敏感 → 真实场景鲁棒性差
+- 无论怎么调参，手写特征无法与深度学习竞争
+
+### 采用方案：LPRNet (CNN + CTC)
+
+| 项目 | 内容 |
+|------|------|
+| 模型架构 | 轻量级 CNN + CTC 损失函数 |
+| 输入 | 94×24 灰度图（归一化到 [0,1]） |
+| 输出 | 68 类 × 18 时间步（含 CTC 空白） |
+| 字符集 | 31 省汉字 + 10 数字 + 24 字母 + 2 特殊 |
+| 来源 | RKNN Model Zoo (CCPD 数据集训练) |
+| 推理 | OpenCV DNN (`cv::dnn::readNetFromONNX`) |
+| 性能 | CPU ~1-3ms/次, 准确率 ~95% |
+
+### 新增文件
+- `src/lpr_recognizer.h` — LPRNet 推理类定义
+- `src/lpr_recognizer.cpp` — 预处理 / 推理 / CTC 贪婪解码实现
+- `models/lprnet.onnx` — 预训练模型文件 (1.7MB)
+
+### 修改文件
+- `src/plate_recognizer.h` — 添加 `setLPRModelPath()` 
+- `src/plate_recognizer.cpp` — `recognize()` 优先 LPRNet，降级模板匹配
+- `src/main.cpp` — 启动时加载 ONNX 模型
+- `CMakeLists.txt` — 添加 `dnn` 模块，构建时复制模型
+
+### 架构变更
+
+识别管线从"图像 → 预处理 → 二值化 → 分割 → 逐个匹配"变为：
+```
+车牌区域 → resize(94×24) → blobFromImage → LPRNet ONNX推理 → CTC解码 → 车牌号
+```
+完整端到端，无需字符分割，直接输出含中文的车牌号码。
+
+### 提交记录
+- `9b7545d` — feat: 集成 LPRNet ONNX 深度学习车牌识别模型
 
 ## 最终架构
 
@@ -145,10 +190,10 @@
     analyzePlateColor() → 蓝/绿/黄牌识别
     ↓
     recognizeCharacters():
-        ├─ preprocessPlateRegion() → CLAHE + 缩放 + 高斯模糊
-        ├─ binarizePlate() → Otsu/自适应阈值自动选优、极性校正
-        ├─ segmentCharacters() → 轮廓法分割 + 重叠合并
-        └─ matchCharacter() → Hu矩 + 孔洞数 + NCC 融合排序
+        ├─ [主] LPRNet 深度学习 (94×24 → ONNX推理 → CTC解码)
+        │   ├─ 支持 31 省汉字 + 字母 + 数字
+        │   └─ 端到端识别，无需分割
+        └─ [辅] 模板匹配降级 (Hu矩 + NCC + 孔洞数融合)
     ↓
     checkRegistration() → 四表联合查询
         ├─ CAR_RECORD (入场记录/是否在场)
@@ -160,6 +205,12 @@
 
 ## 当前局限
 
-- 中文省份字符无法识别（输出 `?` 占位）— 需 ML 模型
-- Hu 矩形状匹配无训练数据，对不清晰/倾斜/光照差的车牌仍不稳定
-- 字符分割依赖二值化质量，复杂背景可能引入噪点
+- LPRNet 对倾斜角度过大或严重模糊的车牌识别率下降
+- HSV 检测在夜间低光照条件下可能漏检车牌区域
+- 未针对双行车牌优化
+- 68 字符模型可升级到 71 字符版（增加港/澳等特殊车牌）
+
+## 后续优化方向
+
+- YuNet LPD ONNX 替换 HSV 检测，提升倾斜/暗光鲁棒性
+- TensorRT INT8 量化加速推理
