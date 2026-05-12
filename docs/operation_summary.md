@@ -389,6 +389,6 @@ POST /api/plate/recognize-image
 
 | 文件 | 变更说明 |
 |------|---------|
-| `src/plate_recognizer.cpp` | H 范围加宽保留（蓝 95-130、绿 30-85），其余参数全部回退 |
+| `src/plate_recognizer.cpp` | 所有检测参数（H 范围、S/V、置信度、margin、面积）完全回退到 `50f25a3` 版本 |
 | `src/lpr_recognizer.cpp` | `applyPlateFormat()` 严格 7 位、pos2-6 禁止汉字、pos0 置信度检查 |
 | `src/main.cpp` | 添加 `setbuf(stderr, nullptr)` 实时日志 |
