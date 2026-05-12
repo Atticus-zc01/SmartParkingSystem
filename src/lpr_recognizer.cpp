@@ -224,6 +224,52 @@ std::string LPRRecognizer::ctcDecode(const cv::Mat& output, double& confidence) 
     return applyPlateFormat(decoded, data, confidence);
 }
 
+/// Validate decoded chars as a 7-char Chinese plate.
+/// Returns the plate string if valid, empty string otherwise.
+/// Modifies decoded in-place (position 1 digit→letter correction).
+static bool validate7CharPlate(
+    std::vector<LPRRecognizer::DecodedChar>& decoded,
+    const float* raw_data,
+    int time_steps,
+    const std::vector<std::string>& charset,
+    double& out_confidence)
+{
+    // Position 0: province (index 0-30)
+    if (decoded[0].char_idx < 0 || decoded[0].char_idx > 30) return false;
+    if (decoded[0].prob < 0.15) return false;
+
+    // Position 1: must be letter (41-66), with digit→letter correction
+    {
+        int idx1 = decoded[1].char_idx;
+        if (idx1 >= 31 && idx1 <= 40) {
+            int ts = decoded[1].time_step;
+            int best_letter = -1;
+            float best_val = -1e10f;
+            for (int c = 41; c <= 66; c++) {
+                float val = raw_data[c * time_steps + ts];
+                if (val > best_val) { best_val = val; best_letter = c; }
+            }
+            if (best_letter < 0) return false;
+            decoded[1].char_idx = best_letter;
+        } else if (idx1 < 41 || idx1 > 66) {
+            return false;
+        }
+    }
+
+    // Positions 2-6: digit (31-40) or letter (41-66)
+    for (int i = 2; i < 7; i++) {
+        int idx = decoded[i].char_idx;
+        if (idx < 31 || idx > 66) return false;
+    }
+
+    // Build confidence from first 7 chars
+    double total_prob = 0.0;
+    for (int i = 0; i < 7; i++)
+        total_prob += decoded[i].prob;
+    out_confidence = total_prob / 7.0;
+    return true;
+}
+
 std::string LPRRecognizer::applyPlateFormat(
     std::vector<DecodedChar>& decoded,
     const float* raw_data,
@@ -245,77 +291,142 @@ std::string LPRRecognizer::applyPlateFormat(
 
     // --- Strict format enforcement ---
     // Chinese standard blue plate:  [province][letter][5 digits/letters] = exactly 7 chars
-    // No 8-char new energy plates.
-    // Position 0: province character (charset index 0-31)
-    // Position 1: letter (charset index 41-66)
-    // Positions 2-6: digit (31-40) or letter (41-66) only — NO province characters
-
-    // Length must be exactly 7
-    if (n != 7) {
-        std::cerr << "[LPR]   rejected: length " << n << " (must be exactly 7)\n";
-        confidence = 0.0;
-        return "";
-    }
-
     // Position 0: province character (charset index 0-30)
-    if (decoded[0].char_idx < 0 || decoded[0].char_idx > 30) {
-        std::cerr << "[LPR]   rejected: pos0 not province (idx=" << decoded[0].char_idx << ")\n";
-        confidence = 0.0;
-        return "";
-    }
+    // Position 1: letter (charset index 41-66)
+    // Positions 2-6: digit (31-40) or letter (41-66) only
 
-    // Position 0: province confidence check — reject if model is guessing
-    if (decoded[0].prob < 0.15) {
-        std::cerr << "[LPR]   rejected: pos0 confidence too low (" << decoded[0].prob << ")\n";
-        confidence = 0.0;
-        return "";
-    }
+    // ---- Strategy 1: exactly 7 chars ----
+    if (n == 7) {
+        double vconf = confidence;
+        std::vector<DecodedChar> copy = decoded;
+        if (validate7CharPlate(copy, raw_data, time_steps_, charset_, vconf)) {
+            decoded = copy;
+            confidence = vconf;
+            std::string result;
+            for (auto& d : decoded) result += charset_[d.char_idx];
+            std::cerr << "[LPR] Final: '" << result << "' (conf=" << confidence << ")\n";
+            return result;
+        }
 
-    // Position 1: must be letter (charset index 41-66)
-    {
-        int idx1 = decoded[1].char_idx;
-        if (idx1 >= 31 && idx1 <= 40) {
-            // Digit at position 1 → try to find best letter alternative
-            int ts = decoded[1].time_step;
-            int best_letter = -1;
+        // ---- Salvage: try to fix common issues ----
+
+        // Salvage A: position 0 is not a province → find best province from model raw output
+        if (decoded[0].char_idx < 0 || decoded[0].char_idx > 30) {
+            int ts = decoded[0].time_step;
+            int best_province = -1;
             float best_val = -1e10f;
-            for (int c = 41; c <= 66; c++) {
+            for (int c = 0; c <= 30; c++) {
                 float val = raw_data[c * time_steps_ + ts];
-                if (val > best_val) { best_val = val; best_letter = c; }
+                if (val > best_val) { best_val = val; best_province = c; }
             }
-            if (best_letter >= 0) {
-                decoded[1].char_idx = best_letter;
-                std::cerr << "[LPR]   pos1: digit→letter " << charset_[idx1]
-                          << "→" << charset_[best_letter] << "\n";
-            } else {
-                std::cerr << "[LPR]   rejected: pos1 is digit but no letter alternative\n";
-                confidence = 0.0;
-                return "";
+            if (best_province >= 0) {
+                std::cerr << "[LPR]   salvage: pos0 " << charset_[decoded[0].char_idx]
+                          << "→" << charset_[best_province] << "\n";
+                std::vector<DecodedChar> copy = decoded;
+                copy[0].char_idx = best_province;
+                double vconf = confidence;
+                if (validate7CharPlate(copy, raw_data, time_steps_, charset_, vconf)) {
+                    decoded = copy;
+                    confidence = vconf * 0.92;
+                    std::string result;
+                    for (auto& d : decoded) result += charset_[d.char_idx];
+                    std::cerr << "[LPR]   salvaged (province): '" << result << "' (conf=" << confidence << ")\n";
+                    return result;
+                }
             }
-        } else if (idx1 < 41 || idx1 > 66) {
-            std::cerr << "[LPR]   rejected: pos1 not letter (idx=" << idx1 << ")\n";
-            confidence = 0.0;
-            return "";
         }
+
+        // Salvage B: last char is letter O → try digit 0 (common OCR confusion)
+        {
+            int last = 6;
+            int idx = decoded[last].char_idx;
+            if (idx == 65) {  // letter O → try digit 0
+                std::vector<DecodedChar> copy = decoded;
+                copy[last].char_idx = 31;  // digit 0
+                double vconf = confidence;
+                if (validate7CharPlate(copy, raw_data, time_steps_, charset_, vconf)) {
+                    decoded = copy;
+                    confidence = vconf * 0.95;
+                    std::string result;
+                    for (auto& d : decoded) result += charset_[d.char_idx];
+                    std::cerr << "[LPR]   salvaged (O→0): '" << result << "' (conf=" << confidence << ")\n";
+                    return result;
+                }
+            }
+        }
+
+        std::cerr << "[LPR]   rejected: 7-char validation failed\n";
+        confidence = 0.0;
+        return "";
     }
 
-    // Positions 2-6: only digit (31-40) or letter (41-66), NO province characters
-    for (int i = 2; i < 7; i++) {
-        int idx = decoded[i].char_idx;
-        if (idx < 31 || idx > 66) {
-            std::cerr << "[LPR]   rejected: pos" << i << " not digit/letter (idx=" << idx << ")\n";
-            confidence = 0.0;
-            return "";
+    // ---- Strategy 2: 8 chars - try ALL 7-char subsequences ----
+    // The model sometimes outputs an extra spurious character (often a digit
+    // between province and letter, or at start/end). Try dropping each position
+    // and pick the subsequence that yields the highest confidence plate.
+    if (n == 8) {
+        std::cerr << "[LPR]   trying 8→7 salvage (all subsequences)...\n";
+
+        int best_drop = -1;
+        double best_sub_conf = 0.0;
+        std::vector<DecodedChar> best_sub;
+
+        for (int drop = 0; drop < 8; drop++) {
+            std::vector<DecodedChar> sub;
+            for (int i = 0; i < 8; i++) {
+                if (i != drop) sub.push_back(decoded[i]);
+            }
+            double sub_conf = confidence;
+            if (validate7CharPlate(sub, raw_data, time_steps_, charset_, sub_conf)) {
+                if (sub_conf > best_sub_conf) {
+                    best_sub_conf = sub_conf;
+                    best_drop = drop;
+                    best_sub = sub;
+                }
+            }
         }
+
+        if (best_drop >= 0) {
+            decoded = best_sub;
+            confidence = best_sub_conf * 0.92;
+            std::string result;
+            for (auto& d : decoded) result += charset_[d.char_idx];
+            std::cerr << "[LPR]   salvaged (drop pos " << best_drop << "): '"
+                      << result << "' (conf=" << confidence << ")\n";
+            return result;
+        }
+
+        std::cerr << "[LPR]   rejected: 8-char salvage failed\n";
+        confidence = 0.0;
+        return "";
     }
 
-    // Build final string from corrected indices
-    std::string result;
-    for (auto& d : decoded)
-        result += charset_[d.char_idx];
+    // ---- Strategy 3: 6 chars - accept if province at pos0 is valid ----
+    if (n == 6) {
+        if (decoded[0].char_idx >= 0 && decoded[0].char_idx <= 30
+            && decoded[0].prob >= 0.15) {
+            bool valid = true;
+            for (int i = 1; i < 6; i++) {
+                int idx = decoded[i].char_idx;
+                if (idx < 31 || idx > 66) { valid = false; break; }
+            }
+            if (valid) {
+                std::string result;
+                for (auto& d : decoded) result += charset_[d.char_idx];
+                confidence *= 0.85;  // penalty for partial plate
+                std::cerr << "[LPR]   accepted (6-char): '" << result << "' (conf=" << confidence << ")\n";
+                return result;
+            }
+        }
+        std::cerr << "[LPR]   rejected: 6-char validation failed\n";
+        confidence = 0.0;
+        return "";
+    }
 
-    std::cerr << "[LPR] Final: '" << result << "' (conf=" << confidence << ")\n";
-    return result;
+    // ---- All other lengths: reject ----
+    std::cerr << "[LPR]   rejected: length " << n << " (only 6, 7, or 8 supported)\n";
+    confidence = 0.0;
+    return "";
 }
 
 LPRRecognizer::Result LPRRecognizer::recognize(const cv::Mat& plate_bgr) {
@@ -334,10 +445,11 @@ LPRRecognizer::Result LPRRecognizer::recognize(const cv::Mat& plate_bgr) {
     // Preprocess
     cv::Mat blob = preprocess(plate_bgr);
 
-    // Inference
-    net_.setInput(blob);
+    // Inference (serialized — DNN net is not thread-safe)
     cv::Mat output;
     try {
+        std::lock_guard<std::mutex> lock(net_mutex_);
+        net_.setInput(blob);
         if (output_names_.empty()) {
             output = net_.forward();
         } else {

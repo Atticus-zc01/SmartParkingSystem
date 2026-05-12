@@ -47,7 +47,7 @@ function stopCamera() {
     document.getElementById('btn-stop-camera').disabled = true;
 }
 
-// ========== Capture & Recognize ==========
+// ========== Capture & Recognize (Burst Mode) ==========
 async function captureAndRecognize() {
     const video = document.getElementById('camera-preview');
     if (!mediaStream || !video.videoWidth) {
@@ -55,39 +55,87 @@ async function captureAndRecognize() {
         return;
     }
 
-    // Capture frame to canvas
+    const FRAMES = 30;
     const canvas = document.createElement('canvas');
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext('2d');
-    ctx.drawImage(video, 0, 0);
-
-    // Convert to base64 JPEG
-    const imageData = canvas.toDataURL('image/jpeg', 0.9);
 
     // Show loading state
     const resultContent = document.getElementById('result-content');
     const resultPlaceholder = document.getElementById('result-placeholder');
     resultPlaceholder.style.display = 'none';
     resultContent.style.display = 'block';
-    document.getElementById('result-plate').textContent = '识别中...';
+    document.getElementById('result-plate').textContent = `采集 100 帧中...`;
     document.getElementById('result-actions').style.display = 'none';
     document.getElementById('result-alert').innerHTML = '';
 
-    // Hide previous capture preview
     const oldPreview = document.getElementById('capture-preview');
     if (oldPreview) oldPreview.remove();
 
-    // Send to server for recognition
-    const res = await post('/api/plate/recognize-image', { image: imageData });
-
-    if (res && res.ok) {
-        displayResult(res.data);
-        addToHistory(res.data);
-    } else {
-        document.getElementById('result-plate').textContent = '识别失败';
-        showError('result-alert', res?.data?.error || '识别请求失败');
+    // Step 1: Rapid capture all 100 frames into memory (~300ms total)
+    const frames = [];
+    for (let i = 0; i < FRAMES; i++) {
+        ctx.drawImage(video, 0, 0);
+        frames.push(canvas.toDataURL('image/jpeg', 0.85));
     }
+
+    // Step 2: Fire all 100 recognition requests in parallel
+    document.getElementById('result-plate').textContent = `识别中 (0/${FRAMES})...`;
+    const requests = frames.map((img, idx) =>
+        post('/api/plate/recognize-image', { image: img })
+            .then(res => {
+                document.getElementById('result-plate').textContent = `识别中 (${idx+1}/${FRAMES})...`;
+                if (res && res.ok && res.data && res.data.plate_number) {
+                    return {
+                        plate: res.data.plate_number,
+                        confidence: res.data.confidence || 0,
+                        raw: res.data
+                    };
+                }
+                return null;
+            })
+            .catch(() => null)
+    );
+
+    const allResults = await Promise.all(requests);
+    const validResults = allResults.filter(r => r !== null);
+
+    // --- Consensus: pick most frequent plate ---
+    if (validResults.length === 0) {
+        document.getElementById('result-plate').textContent = '未识别';
+        showError('result-alert', '10 帧均未检测到含汉字的有效车牌');
+        return;
+    }
+
+    // Count votes per plate
+    const voteMap = new Map();
+    for (const r of validResults) {
+        if (!voteMap.has(r.plate)) {
+            voteMap.set(r.plate, { count: 0, totalConf: 0, best: r });
+        }
+        const e = voteMap.get(r.plate);
+        e.count++;
+        e.totalConf += r.confidence;
+        if (r.confidence > e.best.confidence) e.best = r;
+    }
+
+    // Sort: most votes first, then highest avg confidence
+    const sorted = Array.from(voteMap.entries())
+        .map(([plate, d]) => ({ plate, count: d.count, avgConf: d.totalConf / d.count, best: d.best }))
+        .sort((a, b) => {
+            if (b.count !== a.count) return b.count - a.count;
+            return b.avgConf - a.avgConf;
+        });
+
+    const winner = sorted[0];
+    console.log(`[Vote] '${winner.plate}' ${winner.count}/${FRAMES} conf=${winner.avgConf.toFixed(3)}`);
+
+    // Always show the best result (if it has a province char, applyPlateFormat already validated it)
+    const bestData = winner.best.raw;
+    bestData.recognize_message = `多帧投票 ${winner.count}/${FRAMES}`;
+    displayResult(bestData);
+    addToHistory(bestData);
 }
 
 function displayResult(data) {

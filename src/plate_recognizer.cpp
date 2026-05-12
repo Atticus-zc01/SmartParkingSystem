@@ -181,14 +181,22 @@ std::vector<cv::Rect> PlateRecognizer::detectPlateCandidates(const cv::Mat& src)
 
     cv::Mat color_mask = blue_mask | green_mask;
 
-    // Morphological cleanup: connect nearby blue/green regions
-    cv::Mat kernel5 = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5, 5));
-    cv::morphologyEx(color_mask, color_mask, cv::MORPH_CLOSE, kernel5);
-    cv::morphologyEx(color_mask, color_mask, cv::MORPH_OPEN, kernel5);
+    // Diagnostic: log mask coverage
+    int mask_pixels = cv::countNonZero(color_mask);
+    int total_pixels = src.cols * src.rows;
+    std::cerr << "[DBG]   HSV mask: " << mask_pixels << "/" << total_pixels
+              << " (" << (100.0 * mask_pixels / total_pixels) << "%) non-zero\n";
+
+    // Morphological cleanup: connect fragmented blue/green regions
+    // (plate text in white splits the colored background into small pieces)
+    cv::Mat kernel7 = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(7, 7));
+    cv::morphologyEx(color_mask, color_mask, cv::MORPH_CLOSE, kernel7);
+    cv::morphologyEx(color_mask, color_mask, cv::MORPH_OPEN, kernel7);
 
     std::vector<std::vector<cv::Point>> color_contours;
     cv::findContours(color_mask.clone(), color_contours,
                      cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+    std::cerr << "[DBG]   HSV contours: " << color_contours.size() << "\n";
 
     // Score each HSV candidate by how closely it matches a real plate
     struct ScoredRect {
@@ -197,17 +205,20 @@ std::vector<cv::Rect> PlateRecognizer::detectPlateCandidates(const cv::Mat& src)
         double aspect;  // aspect ratio for debugging
     };
     std::vector<ScoredRect> hsv_scored;
+    std::vector<std::string> rejection_reasons;
 
     for (const auto& cc : color_contours) {
         double area = cv::contourArea(cc);
-        if (area < 1500 || area > 60000) continue;
+        if (area < 1500) { rejection_reasons.push_back("area<1500"); continue; }
+        if (area > 60000) { rejection_reasons.push_back("area>60000"); continue; }
 
         cv::RotatedRect rr = cv::minAreaRect(cc);
         float w = rr.size.width, h = rr.size.height;
         if (w < h) std::swap(w, h);
 
         double asp = w / h;
-        if (asp < 1.5 || asp > 5.0) continue;
+        if (asp < 1.5) { rejection_reasons.push_back("asp<1.5"); continue; }
+        if (asp > 5.0) { rejection_reasons.push_back("asp>5.0"); continue; }
 
         // Score: prefer aspect ratio close to standard plate (3.14:1)
         double aspect_score = 1.0 - std::min(1.0, std::abs(asp - 3.14) / 2.0);
@@ -215,6 +226,15 @@ std::vector<cv::Rect> PlateRecognizer::detectPlateCandidates(const cv::Mat& src)
         cv::Rect br = rr.boundingRect() & cv::Rect(0, 0, src.cols, src.rows);
         double score = std::log(area) * 10.0 + aspect_score * 5.0;
         hsv_scored.push_back({br, score, asp});
+    }
+
+    // Diagnostic: if 0 candidates, show first few rejection reasons
+    if (hsv_scored.empty() && !rejection_reasons.empty()) {
+        size_t show = std::min(rejection_reasons.size(), size_t(5));
+        std::cerr << "[DBG]   HSV rejections (first " << show << "): ";
+        for (size_t i = 0; i < show; i++)
+            std::cerr << rejection_reasons[i] << " ";
+        std::cerr << "\n";
     }
 
     // Sort HSV candidates by score descending
@@ -659,56 +679,78 @@ PlateRecognizer::RecognitionResult PlateRecognizer::recognize(const cv::Mat& fra
         return result;
     }
 
-    // Try each candidate in order of score.
-    // Accept the first one with LPRNet confidence >= MIN_CONFIDENCE
-    // AND exactly 7 or 8 characters (standard Chinese plate format).
-    // Low confidence threshold: format validation (applyPlateFormat) is the primary gatekeeper.
-    // Only accepts 7/8 char plates with correct province+letter structure.
+    // Try ALL candidates with ALL margin sizes, then pick the best result.
+    // This ensures that if a later candidate yields a better/higher-confidence plate,
+    // it will be chosen over an earlier candidate.
     const double MIN_CONFIDENCE = 0.3;
     double confidence = 0.0;
     std::string raw_plate;
     cv::Rect best_rect;
+    double best_conf = 0.0;
 
     for (size_t ci = 0; ci < candidates.size(); ++ci) {
-        cv::Rect plate_rect = candidates[ci];
+        const double margins[] = {0.15, 0.25, 0.35};
+        for (double margin : margins) {
+            cv::Rect try_rect = candidates[ci];
+            int margin_x = static_cast<int>(try_rect.width * margin);
+            int margin_y = static_cast<int>(try_rect.height * margin);
+            try_rect.x = std::max(0, try_rect.x - margin_x);
+            try_rect.y = std::max(0, try_rect.y - margin_y);
+            try_rect.width = std::min(frame.cols - try_rect.x, try_rect.width + 2 * margin_x);
+            try_rect.height = std::min(frame.rows - try_rect.y, try_rect.height + 2 * margin_y);
 
-        // Add 15% margin for LPRNet context (single expansion here only)
-        int margin_x = static_cast<int>(plate_rect.width * 0.15);
-        int margin_y = static_cast<int>(plate_rect.height * 0.15);
-        plate_rect.x = std::max(0, plate_rect.x - margin_x);
-        plate_rect.y = std::max(0, plate_rect.y - margin_y);
-        plate_rect.width = std::min(frame.cols - plate_rect.x, plate_rect.width + 2 * margin_x);
-        plate_rect.height = std::min(frame.rows - plate_rect.y, plate_rect.height + 2 * margin_y);
-
-        cv::Mat plate_region = frame(plate_rect).clone();
-
-        std::cerr << "[DBG] Candidate " << ci << ": " << plate_region.cols << "x"
-                  << plate_region.rows << " at (" << plate_rect.x << "," << plate_rect.y << ")\n";
-
-        // Use LPRNet deep learning model if available
-        if (LPRRecognizer::instance().isLoaded()) {
-            LPRRecognizer::Result lpr_result = LPRRecognizer::instance().recognize(plate_region);
-            std::cerr << "[DBG]   LPRNet: '" << lpr_result.plate << "' (conf="
-                      << lpr_result.confidence << ", len=" << lpr_result.plate.size() << ")\n";
-
-            // Only accept standard-length plates: 7 (blue) or 8 (green new energy)
-            int plen = utf8_chars(lpr_result.plate);
-            bool valid_len = (plen == 7 || plen == 8);
-
-            if (valid_len && lpr_result.confidence >= MIN_CONFIDENCE) {
-                raw_plate = lpr_result.plate;
-                confidence = lpr_result.confidence;
-                best_rect = candidates[ci];
-                std::cerr << "[DBG]   -> accepted\n";
-                break;
+            // Enforce minimum aspect ratio (2.5:1) so the crop captures the full plate width.
+            // HSV often only finds part of the plate (white text fragments the blue background),
+            // resulting in a narrow rect that truncates characters.
+            int min_width = static_cast<int>(try_rect.height * 2.5);
+            if (try_rect.width < min_width && try_rect.width > 0) {
+                int extra = min_width - try_rect.width;
+                int shift_left = std::min(extra / 2, try_rect.x);
+                try_rect.x -= shift_left;
+                try_rect.width = std::min(frame.cols - try_rect.x, try_rect.width + extra);
             }
-        } else if (ci == 0) {
-            // No LPRNet model: fall back to template matching on first candidate only
-            raw_plate = recognizeCharacters(plate_region, confidence);
-            if (raw_plate.size() >= 7 && raw_plate.size() <= 8 && confidence >= MIN_CONFIDENCE) {
-                best_rect = candidates[ci];
-                break;
+
+            cv::Mat plate_region = frame(try_rect).clone();
+
+            std::cerr << "[DBG] Candidate " << ci << " (margin=" << (int)(margin*100)
+                      << "%): " << plate_region.cols << "x" << plate_region.rows
+                      << " at (" << try_rect.x << "," << try_rect.y << ")\n";
+
+            // Try LPRNet deep learning model (primary)
+            if (LPRRecognizer::instance().isLoaded()) {
+                LPRRecognizer::Result lpr_result = LPRRecognizer::instance().recognize(plate_region);
+                std::cerr << "[DBG]   LPRNet: '" << lpr_result.plate << "' (conf="
+                          << lpr_result.confidence << ")\n";
+
+                int plen = utf8_chars(lpr_result.plate);
+                if (plen == 7 && lpr_result.confidence >= MIN_CONFIDENCE
+                    && lpr_result.confidence > best_conf) {
+                    best_conf = lpr_result.confidence;
+                    raw_plate = lpr_result.plate;
+                    confidence = lpr_result.confidence;
+                    best_rect = try_rect;
+                    std::cerr << "[DBG]   -> best so far (conf=" << best_conf << ")\n";
+                }
             }
+        }
+    }
+
+    // If LPRNet found nothing, try CV template matching fallback on first candidate
+    if (raw_plate.empty()) {
+        cv::Rect fallback_rect = candidates[0];
+        int mx = static_cast<int>(fallback_rect.width * 0.15);
+        int my = static_cast<int>(fallback_rect.height * 0.15);
+        fallback_rect.x = std::max(0, fallback_rect.x - mx);
+        fallback_rect.y = std::max(0, fallback_rect.y - my);
+        fallback_rect.width = std::min(frame.cols - fallback_rect.x, fallback_rect.width + 2 * mx);
+        fallback_rect.height = std::min(frame.rows - fallback_rect.y, fallback_rect.height + 2 * my);
+        cv::Mat fallback_region = frame(fallback_rect).clone();
+        raw_plate = recognizeCharacters(fallback_region, confidence);
+        if (raw_plate.size() == 7 && confidence >= MIN_CONFIDENCE) {
+            best_rect = fallback_rect;
+            std::cerr << "[DBG]   CV fallback accepted: '" << raw_plate << "' (conf=" << confidence << ")\n";
+        } else {
+            raw_plate.clear();  // fallback failed too
         }
     }
 
