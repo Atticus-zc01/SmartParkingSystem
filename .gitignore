@@ -39,3 +39,6 @@ Desktop.ini
 
 # Claude Code
 .claude/
+build/
+*.exe
+*.log
