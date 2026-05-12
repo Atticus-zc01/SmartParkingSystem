@@ -244,15 +244,15 @@ std::string LPRRecognizer::applyPlateFormat(
     std::cerr << "[LPR] Raw decode: '" << debug_str << "' (" << n << " chars, conf=" << confidence << ")\n";
 
     // --- Strict format enforcement ---
-    // Chinese standard (blue):  [province][letter][5 digits/letters] = 7 chars
-    // Chinese new energy (green): [province][letter][6 digits/letters] = 8 chars
-    // Position 0: province character (charset index 0-30)
+    // Chinese standard blue plate:  [province][letter][5 digits/letters] = exactly 7 chars
+    // No 8-char new energy plates.
+    // Position 0: province character (charset index 0-31)
     // Position 1: letter (charset index 41-66)
-    // Positions 2+: digit (31-40) or letter (41-66)
+    // Positions 2-6: digit (31-40) or letter (41-66) only — NO province characters
 
-    // Length must be exactly 7 (standard) or 8 (new energy)
-    if (n != 7 && n != 8) {
-        std::cerr << "[LPR]   rejected: length " << n << " (must be 7 or 8)\n";
+    // Length must be exactly 7
+    if (n != 7) {
+        std::cerr << "[LPR]   rejected: length " << n << " (must be exactly 7)\n";
         confidence = 0.0;
         return "";
     }
@@ -264,8 +264,15 @@ std::string LPRRecognizer::applyPlateFormat(
         return "";
     }
 
+    // Position 0: province confidence check — reject if model is guessing
+    if (decoded[0].prob < 0.15) {
+        std::cerr << "[LPR]   rejected: pos0 confidence too low (" << decoded[0].prob << ")\n";
+        confidence = 0.0;
+        return "";
+    }
+
     // Position 1: must be letter (charset index 41-66)
-    if (n >= 2) {
+    {
         int idx1 = decoded[1].char_idx;
         if (idx1 >= 31 && idx1 <= 40) {
             // Digit at position 1 → try to find best letter alternative
@@ -287,6 +294,16 @@ std::string LPRRecognizer::applyPlateFormat(
             }
         } else if (idx1 < 41 || idx1 > 66) {
             std::cerr << "[LPR]   rejected: pos1 not letter (idx=" << idx1 << ")\n";
+            confidence = 0.0;
+            return "";
+        }
+    }
+
+    // Positions 2-6: only digit (31-40) or letter (41-66), NO province characters
+    for (int i = 2; i < 7; i++) {
+        int idx = decoded[i].char_idx;
+        if (idx < 31 || idx > 66) {
+            std::cerr << "[LPR]   rejected: pos" << i << " not digit/letter (idx=" << idx << ")\n";
             confidence = 0.0;
             return "";
         }

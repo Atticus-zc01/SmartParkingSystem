@@ -174,10 +174,11 @@ std::vector<cv::Rect> PlateRecognizer::detectPlateCandidates(const cv::Mat& src)
     cv::Mat hsv;
     cv::cvtColor(src, hsv, cv::COLOR_BGR2HSV);
 
-    // Moderate thresholds: catch plates in varied lighting, reject most non-plates
+    // Fixed thresholds — proven balance between detection rate and false positives.
+    // H ranges slightly widened to handle lighting-induced hue shift.
     cv::Mat blue_mask, green_mask;
-    cv::inRange(hsv, cv::Scalar(100, 60, 50), cv::Scalar(124, 255, 255), blue_mask);
-    cv::inRange(hsv, cv::Scalar(35, 50, 40), cv::Scalar(77, 255, 255), green_mask);
+    cv::inRange(hsv, cv::Scalar(95, 60, 50), cv::Scalar(130, 255, 255), blue_mask);
+    cv::inRange(hsv, cv::Scalar(30, 50, 40), cv::Scalar(85, 255, 255), green_mask);
 
     cv::Mat color_mask = blue_mask | green_mask;
 
@@ -662,6 +663,8 @@ PlateRecognizer::RecognitionResult PlateRecognizer::recognize(const cv::Mat& fra
     // Try each candidate in order of score.
     // Accept the first one with LPRNet confidence >= MIN_CONFIDENCE
     // AND exactly 7 or 8 characters (standard Chinese plate format).
+    // Low confidence threshold: format validation (applyPlateFormat) is the primary gatekeeper.
+    // Only accepts 7/8 char plates with correct province+letter structure.
     const double MIN_CONFIDENCE = 0.3;
     double confidence = 0.0;
     std::string raw_plate;

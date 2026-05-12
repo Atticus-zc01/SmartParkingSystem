@@ -95,6 +95,8 @@ int main() {
 #ifdef _WIN32
     SetConsoleOutputCP(CP_UTF8);
 #endif
+    // Unbuffered stderr so server.log shows debug output immediately
+    std::setbuf(stderr, nullptr);
     std::cout << "==========================================\n";
     std::cout << "    Smart Parking 停车管理系统 v1.0\n";
     std::cout << "==========================================\n\n";
