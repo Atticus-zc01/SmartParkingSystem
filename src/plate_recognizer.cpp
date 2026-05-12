@@ -14,6 +14,16 @@ PlateRecognizer& PlateRecognizer::instance() {
 
 static std::string lpr_model_path;
 
+// Count UTF-8 characters in a string (province chars are 3 bytes each)
+static int utf8_chars(const std::string& s) {
+    int count = 0;
+    for (size_t i = 0; i < s.size(); i++) {
+        if ((s[i] & 0xC0) != 0x80)  // not a continuation byte
+            count++;
+    }
+    return count;
+}
+
 void PlateRecognizer::setLPRModelPath(const std::string& path) {
     lpr_model_path = path;
     if (!path.empty()) {
@@ -164,9 +174,9 @@ std::vector<cv::Rect> PlateRecognizer::detectPlateCandidates(const cv::Mat& src)
     cv::Mat hsv;
     cv::cvtColor(src, hsv, cv::COLOR_BGR2HSV);
 
-    // Relaxed thresholds to catch more candidates
+    // Moderate thresholds: catch plates in varied lighting, reject most non-plates
     cv::Mat blue_mask, green_mask;
-    cv::inRange(hsv, cv::Scalar(100, 50, 40), cv::Scalar(124, 255, 255), blue_mask);
+    cv::inRange(hsv, cv::Scalar(100, 60, 50), cv::Scalar(124, 255, 255), blue_mask);
     cv::inRange(hsv, cv::Scalar(35, 50, 40), cv::Scalar(77, 255, 255), green_mask);
 
     cv::Mat color_mask = blue_mask | green_mask;
@@ -180,87 +190,87 @@ std::vector<cv::Rect> PlateRecognizer::detectPlateCandidates(const cv::Mat& src)
     cv::findContours(color_mask.clone(), color_contours,
                      cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
 
-    std::vector<cv::Rect> hsv_candidates;
+    // Score each HSV candidate by how closely it matches a real plate
+    struct ScoredRect {
+        cv::Rect rect;
+        double score;   // higher = more plate-like
+        double aspect;  // aspect ratio for debugging
+    };
+    std::vector<ScoredRect> hsv_scored;
+
     for (const auto& cc : color_contours) {
         double area = cv::contourArea(cc);
-        if (area < 800 || area > 60000) continue;
+        if (area < 1500 || area > 60000) continue;
 
         cv::RotatedRect rr = cv::minAreaRect(cc);
         float w = rr.size.width, h = rr.size.height;
         if (w < h) std::swap(w, h);
 
         double asp = w / h;
-        if (asp < 1.2 || asp > 5.0) continue;  // wider range for color detection
+        if (asp < 1.5 || asp > 5.0) continue;
 
-        cv::Rect br = rr.boundingRect();
-        // Expand slightly to include plate border
-        int mx = std::max(1, (int)(br.width * 0.1));
-        int my = std::max(1, (int)(br.height * 0.1));
-        br.x = std::max(0, br.x - mx);
-        br.y = std::max(0, br.y - my);
-        br.width = std::min(src.cols - br.x, br.width + 2 * mx);
-        br.height = std::min(src.rows - br.y, br.height + 2 * my);
+        // Score: prefer aspect ratio close to standard plate (3.14:1)
+        double aspect_score = 1.0 - std::min(1.0, std::abs(asp - 3.14) / 2.0);
 
-        hsv_candidates.push_back(br);
+        cv::Rect br = rr.boundingRect() & cv::Rect(0, 0, src.cols, src.rows);
+        double score = std::log(area) * 10.0 + aspect_score * 5.0;
+        hsv_scored.push_back({br, score, asp});
+    }
+
+    // Sort HSV candidates by score descending
+    std::sort(hsv_scored.begin(), hsv_scored.end(),
+        [](const ScoredRect& a, const ScoredRect& b) { return a.score > b.score; });
+
+    std::vector<cv::Rect> hsv_candidates;
+    for (auto& s : hsv_scored) {
+        hsv_candidates.push_back(s.rect);
+        std::cerr << "[DBG]   HSV candidate: " << s.rect.width << "x" << s.rect.height
+                  << " asp=" << s.aspect << " score=" << s.score << "\n";
     }
 
     std::cerr << "[DBG] detectPlateCandidates: " << hsv_candidates.size()
               << " HSV candidates\n";
 
-    // === Supplementary: edge detection (for non-blue/green plates) ===
-    cv::Mat processed = preprocess(src);
-    std::vector<std::vector<cv::Point>> edge_contours;
-    std::vector<cv::Vec4i> hierarchy;
-    cv::findContours(processed.clone(), edge_contours, hierarchy,
-                     cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-
-    std::vector<cv::Rect> edge_candidates;
-    for (const auto& contour : edge_contours) {
-        double area = cv::contourArea(contour);
-        if (area < 1000 || area > 50000) continue;
-
-        cv::RotatedRect rect = cv::minAreaRect(contour);
-        float width = rect.size.width;
-        float height = rect.size.height;
-        if (width < height) std::swap(width, height);
-
-        double aspect = width / height;
-        if (aspect < 1.8 || aspect > 4.5) continue;
-
-        double rect_area = width * height;
-        double extent = area / rect_area;
-        if (extent < 0.4) continue;
-
-        edge_candidates.push_back(rect.boundingRect());
-    }
-
-    std::cerr << "[DBG] detectPlateCandidates: " << edge_candidates.size()
-              << " edge candidates\n";
-
-    // === Merge: HSV candidates first, then non-overlapping edge candidates ===
+    // === Edge detection: only used when HSV finds nothing ===
+    // Edge detection catches plates regardless of color (yellow, white plates),
+    // but generates many false positives, so use only as last resort.
     std::vector<cv::Rect> candidates = hsv_candidates;
 
-    for (const auto& ec : edge_candidates) {
-        bool duplicate = false;
-        for (const auto& hc : hsv_candidates) {
-            cv::Rect inter = ec & hc;
-            if (inter.width > 0 && inter.height > 0) {
-                double overlap = (double)inter.area() / std::min(ec.area(), hc.area());
-                if (overlap > 0.3) {
-                    duplicate = true;
-                    break;
-                }
-            }
-        }
-        if (!duplicate)
-            candidates.push_back(ec);
-    }
+    if (hsv_candidates.empty()) {
+        cv::Mat processed = preprocess(src);
+        std::vector<std::vector<cv::Point>> edge_contours;
+        cv::findContours(processed.clone(), edge_contours,
+                         cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
 
-    // Sort by area descending
-    std::sort(candidates.begin(), candidates.end(),
-        [](const cv::Rect& a, const cv::Rect& b) {
-            return a.area() > b.area();
-        });
+        std::vector<cv::Rect> edge_candidates;
+        for (const auto& contour : edge_contours) {
+            double area = cv::contourArea(contour);
+            if (area < 2500 || area > 50000) continue;
+
+            cv::RotatedRect rect = cv::minAreaRect(contour);
+            float width = rect.size.width;
+            float height = rect.size.height;
+            if (width < height) std::swap(width, height);
+
+            double aspect = width / height;
+            if (aspect < 2.5 || aspect > 4.0) continue;
+
+            double rect_area = width * height;
+            double extent = area / rect_area;
+            if (extent < 0.4) continue;
+
+            cv::Rect br = rect.boundingRect() & cv::Rect(0, 0, src.cols, src.rows);
+
+            edge_candidates.push_back(br);
+        }
+
+        std::sort(edge_candidates.begin(), edge_candidates.end(),
+            [](const cv::Rect& a, const cv::Rect& b) { return a.area() > b.area(); });
+
+        std::cerr << "[DBG] detectPlateCandidates: " << edge_candidates.size()
+                  << " edge candidates (HSV empty, last resort)\n";
+        candidates = edge_candidates;
+    }
 
     return candidates;
 }
@@ -649,62 +659,69 @@ PlateRecognizer::RecognitionResult PlateRecognizer::recognize(const cv::Mat& fra
         return result;
     }
 
-    cv::Rect plate_rect = candidates[0];
-
-    int margin_x = static_cast<int>(plate_rect.width * 0.05);
-    int margin_y = static_cast<int>(plate_rect.height * 0.05);
-    plate_rect.x = std::max(0, plate_rect.x - margin_x);
-    plate_rect.y = std::max(0, plate_rect.y - margin_y);
-    plate_rect.width = std::min(frame.cols - plate_rect.x, plate_rect.width + 2 * margin_x);
-    plate_rect.height = std::min(frame.rows - plate_rect.y, plate_rect.height + 2 * margin_y);
-
-    cv::Mat plate_region = frame(plate_rect).clone();
-
-    result.plate_color = analyzePlateColor(plate_region);
-
+    // Try each candidate in order of score.
+    // Accept the first one with LPRNet confidence >= MIN_CONFIDENCE
+    // AND exactly 7 or 8 characters (standard Chinese plate format).
+    const double MIN_CONFIDENCE = 0.3;
     double confidence = 0.0;
     std::string raw_plate;
+    cv::Rect best_rect;
 
-    // Use LPRNet deep learning model if available
-    if (LPRRecognizer::instance().isLoaded()) {
-        LPRRecognizer::Result lpr_result = LPRRecognizer::instance().recognize(plate_region);
-        raw_plate = lpr_result.plate;
-        confidence = lpr_result.confidence;
-        if (!raw_plate.empty()) {
-            std::cerr << "[DBG] LPRNet: " << raw_plate << " (conf=" << confidence << ")\n";
+    for (size_t ci = 0; ci < candidates.size(); ++ci) {
+        cv::Rect plate_rect = candidates[ci];
+
+        // Add 15% margin for LPRNet context (single expansion here only)
+        int margin_x = static_cast<int>(plate_rect.width * 0.15);
+        int margin_y = static_cast<int>(plate_rect.height * 0.15);
+        plate_rect.x = std::max(0, plate_rect.x - margin_x);
+        plate_rect.y = std::max(0, plate_rect.y - margin_y);
+        plate_rect.width = std::min(frame.cols - plate_rect.x, plate_rect.width + 2 * margin_x);
+        plate_rect.height = std::min(frame.rows - plate_rect.y, plate_rect.height + 2 * margin_y);
+
+        cv::Mat plate_region = frame(plate_rect).clone();
+
+        std::cerr << "[DBG] Candidate " << ci << ": " << plate_region.cols << "x"
+                  << plate_region.rows << " at (" << plate_rect.x << "," << plate_rect.y << ")\n";
+
+        // Use LPRNet deep learning model if available
+        if (LPRRecognizer::instance().isLoaded()) {
+            LPRRecognizer::Result lpr_result = LPRRecognizer::instance().recognize(plate_region);
+            std::cerr << "[DBG]   LPRNet: '" << lpr_result.plate << "' (conf="
+                      << lpr_result.confidence << ", len=" << lpr_result.plate.size() << ")\n";
+
+            // Only accept standard-length plates: 7 (blue) or 8 (green new energy)
+            int plen = utf8_chars(lpr_result.plate);
+            bool valid_len = (plen == 7 || plen == 8);
+
+            if (valid_len && lpr_result.confidence >= MIN_CONFIDENCE) {
+                raw_plate = lpr_result.plate;
+                confidence = lpr_result.confidence;
+                best_rect = candidates[ci];
+                std::cerr << "[DBG]   -> accepted\n";
+                break;
+            }
+        } else if (ci == 0) {
+            // No LPRNet model: fall back to template matching on first candidate only
+            raw_plate = recognizeCharacters(plate_region, confidence);
+            if (raw_plate.size() >= 7 && raw_plate.size() <= 8 && confidence >= MIN_CONFIDENCE) {
+                best_rect = candidates[ci];
+                break;
+            }
         }
     }
 
-    // Fall back to template matching if LPR didn't produce a result
-    if (raw_plate.empty()) {
-        raw_plate = recognizeCharacters(plate_region, confidence);
+    // Set result color from the winning candidate
+    if (best_rect.area() > 0) {
+        cv::Mat plate_region = frame(best_rect).clone();
+        result.plate_color = analyzePlateColor(plate_region);
     }
 
     if (raw_plate.empty()) {
-        result.message = "检测到车牌区域但无法识别字符";
+        result.message = "检测到车牌区域但无法识别字符（所有候选置信度均低于阈值）";
         return result;
     }
 
-    std::string clean_plate;
-    for (size_t i = 0; i < raw_plate.size(); ++i) {
-        char c = raw_plate[i];
-        if (c == '?' || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
-            clean_plate += c;
-        }
-    }
-
-    if (clean_plate.size() < 3) {
-        result.message = "识别结果不完整: " + raw_plate;
-        result.plate_number = raw_plate;
-        result.confidence = confidence;
-        return result;
-    }
-
-    if (clean_plate.size() >= 6 && clean_plate[0] >= 'A' && clean_plate[0] <= 'Z') {
-        clean_plate = "?" + clean_plate;
-    }
-
-    result.plate_number = clean_plate;
+    result.plate_number = raw_plate;
     result.confidence = confidence;
     result.message = "识别成功";
     return result;

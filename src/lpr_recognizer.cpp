@@ -174,17 +174,14 @@ std::string LPRRecognizer::ctcDecode(const cv::Mat& output, double& confidence) 
     if (num_classes != (int)charset_.size()) {
         std::cerr << "[LPR] charset size mismatch: model=" << num_classes
                   << " expected=" << charset_.size() << "\n";
-        // Try to fix by reinitializing
         initCharset(num_classes);
         if (num_classes != (int)charset_.size())
             return "";
     }
 
     const float* data = output.ptr<float>();
-    std::string result;
+    std::vector<DecodedChar> decoded;
     int prev_idx = -1;
-    double total_prob = 0.0;
-    int valid_steps = 0;
 
     for (int t = 0; t < time_steps; t++) {
         // Find argmax at this time step
@@ -206,28 +203,101 @@ std::string LPRRecognizer::ctcDecode(const cv::Mat& output, double& confidence) 
         }
         double softmax_prob = std::exp(data[max_idx * time_steps + t] - max_val) / exp_sum;
 
-        // Skip blank (last class, typically '-' at index 67)
+        // CORRECTED ORDER: CTC greedy decoding
+        // Step 1: Collapse consecutive repeats FIRST (regardless of blank)
+        if (max_idx == prev_idx)
+            continue;
+        prev_idx = max_idx;
+
+        // Step 2: THEN skip blanks
+        // This allows blanks between identical characters to properly separate them
         if (max_idx == blank_idx_)
             continue;
 
-        // Collapse consecutive repeats (CTC merge)
-        if (max_idx == prev_idx)
-            continue;
+        decoded.push_back({max_idx, t, softmax_prob});
+    }
 
-        prev_idx = max_idx;
+    if (decoded.empty())
+        return "";
 
-        // Map to character
-        if (max_idx < (int)charset_.size() && !charset_[max_idx].empty()) {
-            result += charset_[max_idx];
-            total_prob += softmax_prob;
-            valid_steps++;
+    // Apply plate format post-processing
+    return applyPlateFormat(decoded, data, confidence);
+}
+
+std::string LPRRecognizer::applyPlateFormat(
+    std::vector<DecodedChar>& decoded,
+    const float* raw_data,
+    double& confidence)
+{
+    int n = (int)decoded.size();
+
+    // Calculate baseline confidence from per-step probabilities
+    double total_prob = 0.0;
+    for (auto& d : decoded)
+        total_prob += d.prob;
+    confidence = n > 0 ? total_prob / n : 0.0;
+
+    // Build debug string
+    std::string debug_str;
+    for (auto& d : decoded)
+        debug_str += charset_[d.char_idx];
+    std::cerr << "[LPR] Raw decode: '" << debug_str << "' (" << n << " chars, conf=" << confidence << ")\n";
+
+    // --- Strict format enforcement ---
+    // Chinese standard (blue):  [province][letter][5 digits/letters] = 7 chars
+    // Chinese new energy (green): [province][letter][6 digits/letters] = 8 chars
+    // Position 0: province character (charset index 0-30)
+    // Position 1: letter (charset index 41-66)
+    // Positions 2+: digit (31-40) or letter (41-66)
+
+    // Length must be exactly 7 (standard) or 8 (new energy)
+    if (n != 7 && n != 8) {
+        std::cerr << "[LPR]   rejected: length " << n << " (must be 7 or 8)\n";
+        confidence = 0.0;
+        return "";
+    }
+
+    // Position 0: province character (charset index 0-30)
+    if (decoded[0].char_idx < 0 || decoded[0].char_idx > 30) {
+        std::cerr << "[LPR]   rejected: pos0 not province (idx=" << decoded[0].char_idx << ")\n";
+        confidence = 0.0;
+        return "";
+    }
+
+    // Position 1: must be letter (charset index 41-66)
+    if (n >= 2) {
+        int idx1 = decoded[1].char_idx;
+        if (idx1 >= 31 && idx1 <= 40) {
+            // Digit at position 1 → try to find best letter alternative
+            int ts = decoded[1].time_step;
+            int best_letter = -1;
+            float best_val = -1e10f;
+            for (int c = 41; c <= 66; c++) {
+                float val = raw_data[c * time_steps_ + ts];
+                if (val > best_val) { best_val = val; best_letter = c; }
+            }
+            if (best_letter >= 0) {
+                decoded[1].char_idx = best_letter;
+                std::cerr << "[LPR]   pos1: digit→letter " << charset_[idx1]
+                          << "→" << charset_[best_letter] << "\n";
+            } else {
+                std::cerr << "[LPR]   rejected: pos1 is digit but no letter alternative\n";
+                confidence = 0.0;
+                return "";
+            }
+        } else if (idx1 < 41 || idx1 > 66) {
+            std::cerr << "[LPR]   rejected: pos1 not letter (idx=" << idx1 << ")\n";
+            confidence = 0.0;
+            return "";
         }
     }
 
-    // Confidence is average of argmax probabilities for non-blank steps
-    if (valid_steps > 0)
-        confidence = total_prob / valid_steps;
+    // Build final string from corrected indices
+    std::string result;
+    for (auto& d : decoded)
+        result += charset_[d.char_idx];
 
+    std::cerr << "[LPR] Final: '" << result << "' (conf=" << confidence << ")\n";
     return result;
 }
 

@@ -31,8 +31,20 @@ private:
     // Preprocess plate region: resize to 94x24, normalize
     cv::Mat preprocess(const cv::Mat& plate_bgr);
 
+    // Per-character decoded info for post-processing
+    struct DecodedChar {
+        int char_idx;      // index into charset_
+        int time_step;     // time step in model output (for score lookup)
+        double prob;       // softmax probability at this step
+    };
+
     // CTC greedy decoding
     std::string ctcDecode(const cv::Mat& output, double& confidence);
+
+    // Post-process plate string with format constraints
+    std::string applyPlateFormat(std::vector<DecodedChar>& decoded,
+                                  const float* raw_data,
+                                  double& confidence);
 
     cv::dnn::Net net_;
     bool loaded_ = false;

@@ -244,3 +244,117 @@
 ---
 
 ## 当前局限
+
+1. **倾斜/模糊车牌** — LPRNet 对角度过大或严重模糊的车牌识别率下降
+2. **夜间低光照** — HSV 检测在光线不足时可能漏检车牌区域
+3. **双行车牌** — 当前检测管线未针对双行车牌优化
+4. **模型精度** — 68 字符 LPRNet 模型可升级到更优版本（如 71 字符版）
+
+## 后续优化方向
+
+- **YuNet LPD ONNX** — 替换 HSV 检测为深度学习检测，提升倾斜/暗光场景
+- **更高精度模型** — 升级到 71 字符 LPRNet 或 CRNN 模型
+- **TensorRT 加速** — 使用 INT8 量化提升推理速度
+
+---
+
+## 第十阶段：CTC 解码修复、严格格式约束、检测管线调优
+
+### 问题反馈
+
+用户持续反馈三大问题：
+1. **"识别像乱识别，每次结果不一样"** — 检测到非车牌区域，LPRNet 胡乱输出
+2. **"相同字符在一起时会漏掉"** — CTC 解码顺序错误
+3. **"只能识别出 1-2 个字符"** — 格式约束太宽松 + UTF-8 长度误判
+
+### 根因分析（4 个 Bug）
+
+| Bug | 文件 | 现象 | 根因 |
+|-----|------|------|------|
+| **CTC 顺序错误** | `lpr_recognizer.cpp:ctcDecode()` | 重复字符被合并（如 888→8） | 先检查空白→后合并重复，空白不更新 prev_idx，导致相邻相同字符被跳过 |
+| **UTF-8 长度误判** | `plate_recognizer.cpp:recognize()` | 7 位中文车牌被拒（size=9） | `std::string::size()` 返回字节数，中文占 3 字节 |
+| **边界框越界** | `plate_recognizer.cpp` | 服务器 500 崩溃 | `minAreaRect` 的 `boundingRect()` 在倾斜车牌时超出图像范围 |
+| **检测区双重扩展** | `plate_recognizer.cpp` | 车牌在 LPRNet 输入中占比太小 | 检测阶段和识别阶段各自加了 15% 扩展 |
+
+### 修复措施
+
+#### 1) CTC 贪婪解码顺序修正
+
+标准 CTC 算法：**先合并重复 → 再去空白**。旧实现做反了。
+
+旧代码流程（错误）：
+```
+for each time step:
+    if blank: continue (prev_idx unchanged)
+    if max_idx == prev_idx: continue (skip duplicate)
+    prev_idx = max_idx; output += char
+```
+问题：`A → blank → A` 路径中，blank 不更新 prev_idx（仍为 A），第二个 A 被错误合并。
+
+新代码流程（正确）：
+```
+for each time step:
+    if max_idx == prev_idx: continue (collapse first)
+    prev_idx = max_idx
+    if blank: continue (remove blank second)
+    output += char
+```
+`A → blank → A`：blank 后 prev_idx=blank，第二个 A ≠ blank → 正常输出。
+
+#### 2) UTF-8 字符计数
+
+添加 `utf8_chars()` 辅助函数，跳过 UTF-8 连续字节（0x80-0xBF），正确统计字符数。
+
+#### 3) 边界框钳位
+
+在所有 `boundingRect()` 后添加 `& cv::Rect(0, 0, src.cols, src.rows)` 钳位操作。
+
+#### 4) 检测扩展规范化
+
+去除 `detectPlateCandidates()` 中的扩展，仅在 `recognize()` 中做一次 15% 扩展。
+
+### 检测管线优化
+
+| 优化项 | 之前 | 之后 |
+|--------|------|------|
+| 蓝色 HSV 阈值 | S≥80, V≥60 或 S≥30, V≥30（摇摆） | **S≥60, V≥50**（平衡） |
+| 绿色 HSV 阈值 | S≥60, V≥50 或 S≥30, V≥30（摇摆） | **S≥50, V≥40**（平衡） |
+| HSV 最小面积 | 800-2000（摇摆） | **1500px** |
+| 候选排序 | 按面积降序 | **宽高比评分 + 面积加权** |
+| 边缘检测 | 始终执行，重叠过滤后追加 | **仅 HSV 为空时执行** |
+| 边缘宽高比 | 1.8-4.5 | **2.5-4.0**（更严格） |
+| 置信度阈值 | 0.5 | **0.3**（由格式约束替代） |
+
+### 格式约束（新增 `applyPlateFormat()`）
+
+| 规则 | 处理方式 |
+|------|---------|
+| 长度 | **只接受 7 位（蓝牌）或 8 位（绿牌）** |
+| 位置 0 | **必须是省份字符**，否则返回空 |
+| 位置 1 | **必须是字母**，数字则查模型原始 logit 取最优字母替代 |
+| 不合规结果 | 返回空字符串、confidence=0，不降级、不"带病"输出 |
+
+### 合成车牌测试
+
+用 PIL 生成 `粤A·88888` 蓝色车牌（440×140px）端到端测试：
+
+```
+POST /api/plate/recognize-image
+  → HSV 检测: 1 候选, 宽高比 3.26, 评分 114.3  ✓
+  → LPRNet: '黑AJ8888' (省份因合成字体差异, 其余全对)  ✓
+  → 格式验证: 7 位, 省份+字母, 通过  ✓
+  → 重复字符: 5 个 8 全部保留 (CTC 修复)  ✓
+  → 颜色: blue, 置信度: 0.96, 无崩溃  ✓
+```
+
+### 文件变更
+
+| 文件 | 变更类型 | 说明 |
+|------|---------|------|
+| `src/lpr_recognizer.h` | 修改 | 添加 `DecodedChar` 结构体、`applyPlateFormat()` 声明 |
+| `src/lpr_recognizer.cpp` | 重写 | CTC 解码顺序修复、新增格式约束后处理、置信度重新计算 |
+| `src/plate_recognizer.cpp` | 重写 | 检测阈值平衡、候选评分排序、边缘降级、UTF-8 计数、边界钳位 |
+
+### 提交记录
+
+- `[本次提交]` — fix: 修复 CTC 解码顺序错误、严格车牌格式约束、检测阈值调优
