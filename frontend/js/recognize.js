@@ -55,7 +55,7 @@ async function captureAndRecognize() {
         return;
     }
 
-    const FRAMES = 30;
+    const FRAMES = 3;
     const canvas = document.createElement('canvas');
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;

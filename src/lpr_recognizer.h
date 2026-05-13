@@ -23,46 +23,28 @@ public:
     // Check if model is loaded
     bool isLoaded() const { return loaded_; }
 
-    // Per-character decoded info for post-processing
-    struct DecodedChar {
-        int char_idx;      // index into charset_
-        int time_step;     // time step in model output (for score lookup)
-        double prob;       // softmax probability at this step
-    };
-
 private:
     LPRRecognizer() = default;
 
-    // Probe model to determine input/output dimensions
-    bool probeModel();
-
-    // Preprocess plate region: resize to 94x24, normalize
+    // Preprocess plate region: resize keeping aspect ratio, pad to 160x48,
+    // normalize to [-1, 1]: (val - 127.5) / 127.5
     cv::Mat preprocess(const cv::Mat& plate_bgr);
 
-    // CTC greedy decoding
+    // CTC greedy decoding for (1, time_steps, num_classes) output
     std::string ctcDecode(const cv::Mat& output, double& confidence);
 
-    // Post-process plate string with format constraints
-    std::string applyPlateFormat(std::vector<DecodedChar>& decoded,
-                                  const float* raw_data,
-                                  double& confidence);
-
     cv::dnn::Net net_;
-    std::mutex net_mutex_;   // serializes concurrent inference (DNN not thread-safe)
+    std::mutex net_mutex_;
     bool loaded_ = false;
-    bool probed_ = false;
 
-    // Model dimensions (auto-detected)
-    int input_width_ = 94;
-    int input_height_ = 24;
-    int num_classes_ = 0;       // including CTC blank
-    int time_steps_ = 0;
+    // HyperLPR3 rpv3_mdict_160_r3 dimensions
+    int input_width_ = 160;
+    int input_height_ = 48;
+    int num_classes_ = 78;
+    int time_steps_ = 20;
 
-    // Character set (populated based on num_classes)
+    // Character set (78 tokens, index 0 = CTC blank)
     std::vector<std::string> charset_;
-    int blank_idx_ = -1;       // index of CTC blank (last class)
-    void initCharset(int num_classes);
-
-    // Buffer for detecting output shape
-    std::vector<std::string> output_names_;
+    int blank_idx_ = 0;
+    void initCharset();
 };

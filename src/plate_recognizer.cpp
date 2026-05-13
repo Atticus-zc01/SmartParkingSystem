@@ -177,7 +177,7 @@ std::vector<cv::Rect> PlateRecognizer::detectPlateCandidates(const cv::Mat& src)
     // Fixed thresholds — proven balance between detection rate and false positives.
     cv::Mat blue_mask, green_mask;
     cv::inRange(hsv, cv::Scalar(100, 60, 50), cv::Scalar(124, 255, 255), blue_mask);
-    cv::inRange(hsv, cv::Scalar(35, 50, 40), cv::Scalar(77, 255, 255), green_mask);
+    cv::inRange(hsv, cv::Scalar(25, 40, 40), cv::Scalar(90, 255, 255), green_mask);
 
     cv::Mat color_mask = blue_mask | green_mask;
 
@@ -209,7 +209,7 @@ std::vector<cv::Rect> PlateRecognizer::detectPlateCandidates(const cv::Mat& src)
 
     for (const auto& cc : color_contours) {
         double area = cv::contourArea(cc);
-        if (area < 1500) { rejection_reasons.push_back("area<1500"); continue; }
+        if (area < 800) { rejection_reasons.push_back("area<800"); continue; }
         if (area > 60000) { rejection_reasons.push_back("area>60000"); continue; }
 
         cv::RotatedRect rr = cv::minAreaRect(cc);
@@ -218,7 +218,7 @@ std::vector<cv::Rect> PlateRecognizer::detectPlateCandidates(const cv::Mat& src)
 
         double asp = w / h;
         if (asp < 1.5) { rejection_reasons.push_back("asp<1.5"); continue; }
-        if (asp > 5.0) { rejection_reasons.push_back("asp>5.0"); continue; }
+        if (asp > 6.0) { rejection_reasons.push_back("asp>6.0"); continue; }
 
         // Score: prefer aspect ratio close to standard plate (3.14:1)
         double aspect_score = 1.0 - std::min(1.0, std::abs(asp - 3.14) / 2.0);
@@ -723,7 +723,7 @@ PlateRecognizer::RecognitionResult PlateRecognizer::recognize(const cv::Mat& fra
                           << lpr_result.confidence << ")\n";
 
                 int plen = utf8_chars(lpr_result.plate);
-                if (plen == 7 && lpr_result.confidence >= MIN_CONFIDENCE
+                if ((plen == 7 || plen == 8) && lpr_result.confidence >= MIN_CONFIDENCE
                     && lpr_result.confidence > best_conf) {
                     best_conf = lpr_result.confidence;
                     raw_plate = lpr_result.plate;
