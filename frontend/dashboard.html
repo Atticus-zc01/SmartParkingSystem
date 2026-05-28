@@ -20,6 +20,12 @@
                 <a class="nav-item active" id="nav-dashboard" href="/dashboard.html">
                     <span class="icon">&#9776;</span> 主面板
                 </a>
+                <a class="nav-item" id="nav-parking" href="/parking.html">
+                    <span class="icon">&#127359;</span> 停车场
+                </a>
+                <a class="nav-item" id="nav-checkin" href="/checkin.html">
+                    <span class="icon">&#9971;</span> 车辆入库
+                </a>
                 <a class="nav-item" id="nav-vehicles" href="/vehicles.html">
                     <span class="icon">&#128663;</span> 车辆信息
                 </a>
@@ -83,28 +89,19 @@
                 <!-- Left Column -->
                 <div class="col-2">
 
-                    <!-- Admin: Vehicle Check-in/Check-out -->
+                    <!-- Quick Vehicle Check-in/Check-out -->
                     <div class="card" id="card-vehicle-ops">
-                        <div class="card-title">车辆入库</div>
+                        <div class="card-title">快捷出入库 <a href="/checkin.html" style="font-size:12px;float:right;">选位入库 &raquo;</a></div>
                         <div id="vehicle-alert"></div>
                         <div class="form-group">
                             <label>车牌号</label>
                             <div class="plate-input-group">
                                 <input type="text" id="plate-input" class="form-control" placeholder="例: 京A12345" maxlength="10">
-                                <button class="btn btn-default btn-sm" onclick="handlePlateRecognize()" id="btn-plate-recognize" title="车牌识别(预留)">识别</button>
+                                <button class="btn btn-default btn-sm" onclick="handlePlateRecognize()" id="btn-plate-recognize" title="车牌识别">识别</button>
                             </div>
                         </div>
-                        <div class="form-group">
-                            <label>计费方式</label>
-                            <select id="billing-type" class="form-control">
-                                <option value="standard">标准计费</option>
-                                <option value="tiered">阶梯计费</option>
-                                <option value="member">会员计费</option>
-                                <option value="special">特殊车辆(免费)</option>
-                            </select>
-                        </div>
                         <div class="actions mt-2">
-                            <button class="btn btn-primary" onclick="handleCheckIn()" id="btn-checkin">车辆入库</button>
+                            <button class="btn btn-primary" onclick="handleCheckIn()" id="btn-checkin">快速入库</button>
                             <button class="btn btn-danger" onclick="handleCheckOut()" id="btn-checkout">车辆出库</button>
                         </div>
                     </div>
@@ -125,13 +122,15 @@
                                 <thead>
                                     <tr>
                                         <th>车牌号</th>
+                                        <th>停车场</th>
+                                        <th>车位</th>
                                         <th>入库时间</th>
                                         <th>已停时长</th>
                                         <th style="width:80px">操作</th>
                                     </tr>
                                 </thead>
                                 <tbody id="parked-vehicles-list">
-                                    <tr><td colspan="4" class="loading">加载中...</td></tr>
+                                    <tr><td colspan="6" class="loading">加载中...</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -148,19 +147,6 @@
                     <div class="card" id="card-pass-plans">
                         <div class="card-title">套餐购买</div>
                         <div id="pass-plans-container"><p style="color:#999">加载中...</p></div>
-                    </div>
-
-                    <!-- My Vehicles -->
-                    <div class="card" id="card-my-vehicles">
-                        <div class="card-title">我的车辆</div>
-                        <div id="my-vehicles-alert"></div>
-                        <div id="my-vehicles-container">
-                            <div class="form-row" style="gap:6px;margin-bottom:10px">
-                                <input type="text" id="my-vehicle-input" class="form-control" placeholder="添加车牌号（如京A12345）" maxlength="10" style="flex:1;padding:6px 10px;font-size:13px">
-                                <button class="btn btn-primary btn-sm" onclick="addMyVehicle()">添加</button>
-                            </div>
-                            <div id="my-vehicles-list" style="max-height:200px;overflow-y:auto"><p style="color:#999;font-size:13px">暂无车辆，请添加您的车牌号</p></div>
-                        </div>
                     </div>
 
                     <!-- Recent Vehicle Records -->
@@ -195,20 +181,8 @@
 
                     <!-- Admin: Parking Settings -->
                     <div class="card" id="card-settings">
-                        <div class="card-title">停车场信息</div>
-                        <div class="form-group">
-                            <label>停车场名称</label>
-                            <input type="text" id="parking-name" class="form-control" readonly>
-                        </div>
-                        <div class="form-group">
-                            <label>每小时费率 (元)</label>
-                            <input type="number" id="parking-fee" class="form-control" step="0.5">
-                        </div>
-                        <div class="form-group">
-                            <label>总车位数</label>
-                            <input type="number" id="parking-capacity" class="form-control">
-                        </div>
-                        <button class="btn btn-primary btn-sm" onclick="updateSettings()">保存设置</button>
+                        <div class="card-title">停车场管理</div>
+                        <div id="parking-lots-settings"></div>
                     </div>
 
                     <!-- Interception Stats (admin only) -->

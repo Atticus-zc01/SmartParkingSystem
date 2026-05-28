@@ -7,6 +7,21 @@ ReservationService& ReservationService::instance() {
     return inst;
 }
 
+void ReservationService::cleanExpiredReservations() {
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - lastCleanup_).count();
+    if (elapsed < 30) return;  // Throttle to every 30 seconds
+    lastCleanup_ = now;
+
+    auto conn = getConnection();
+    if (!conn) return;
+    MYSQL* mysql = conn->get();
+    int expire_min = AppConfig::instance().notice_expire_minutes;
+    std::string sql = "UPDATE RESERVATION SET status='expired' WHERE status='active' AND created_at < DATE_SUB(NOW(), INTERVAL " +
+        std::to_string(expire_min) + " MINUTE)";
+    mysql_query(mysql, sql.c_str());
+}
+
 bool ReservationService::create(const std::string& plate, const std::string& P_name, int userId, std::string& error) {
     return create(plate, P_name, userId, 0, error);
 }
@@ -102,6 +117,7 @@ bool ReservationService::create(const std::string& plate, const std::string& P_n
 }
 
 std::vector<Reservation> ReservationService::list() {
+    cleanExpiredReservations();
     return CrudService<Reservation>::list("SELECT id,license_plate,P_name,prepaid,status,spot_number,created_at FROM RESERVATION WHERE status='active' ORDER BY created_at DESC");
 }
 
@@ -123,6 +139,7 @@ std::vector<Reservation> ReservationService::getHistory(const std::string& start
 }
 
 crow::json::wvalue ReservationService::getSpotStatus(const std::string& P_name, int totalSpots) {
+    cleanExpiredReservations();
     auto conn = getConnection();
     crow::json::wvalue result;
     std::vector<crow::json::wvalue> spots;

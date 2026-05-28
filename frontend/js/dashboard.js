@@ -28,10 +28,8 @@ function applyPermUI() {
     document.getElementById('card-pass-plans').style.display = hasPerm('balance.view') ? '' : 'none';
     document.getElementById('card-balance').style.display = hasPerm('balance.view') ? '' : 'none';
     document.getElementById('card-recent-records').style.display = hasPerm('vehicle.query') ? '' : 'none';
-    document.getElementById('card-settings').style.display = hasPerm('parking.settings') ? '' : 'none';
     document.getElementById('card-prediction').style.display = hasPerm('report.view') ? '' : 'none';
     document.getElementById('card-interceptions').style.display = hasPerm('vehicle.blacklist') ? '' : 'none';
-    // Bulletin is visible to everyone
     document.getElementById('card-plate-recognition').style.display = hasPerm('plate.recognize') ? '' : 'none';
     document.getElementById('card-parked-vehicles').style.display = hasPerm('vehicle.query') ? '' : 'none';
 }
@@ -61,26 +59,48 @@ async function loadParkingLots() {
     const res = await get('/api/parking/list');
     const sel = document.getElementById('parking-selector');
     if (!res || !res.ok || !sel || !res.data.lots) return;
-    sel.innerHTML = res.data.lots.map(l => {
+    const lots = res.data.lots;
+    sel.innerHTML = lots.map(l => {
         const avail = l.P_total_count - l.P_current_count - l.P_reserve_count;
         return `<option value="${escapeHtml(l.P_name)}">${escapeHtml(l.P_name)} (${avail}/${l.P_total_count})</option>`;
     }).join('');
+    // Default to first lot if not yet selected
+    if (lots.length > 0 && !sel.dataset.loaded) {
+        sel.dataset.loaded = '1';
+        currentLot = lots[0].P_name;
+        sel.value = currentLot;
+    }
+    // Also update the checkin form's lot options
+    const checkinLot = document.getElementById('checkin-lot');
+    if (checkinLot) {
+        checkinLot.innerHTML = lots.map(l =>
+            `<option value="${escapeHtml(l.P_name)}">${escapeHtml(l.P_name)}</option>`
+        ).join('');
+    }
+    // Now that currentLot is set, load status and plans with the correct lot
+    loadStatus();
+    loadPassPlans();
+}
+
+let currentLot = '';
+
+function onParkingChange() {
+    const sel = document.getElementById('parking-selector');
+    if (sel) currentLot = sel.value;
+    loadStatus();
+    loadPassPlans();
 }
 
 async function loadStatus() {
-    const res = await get('/api/parking/status');
+    let url = '/api/parking/status';
+    if (currentLot) url += '?P_name=' + encodeURIComponent(currentLot);
+    const res = await get(url);
     if (!res || !res.ok) return;
     const d = res.data;
     document.getElementById('stat-total').textContent = d.P_total_count;
     document.getElementById('stat-occupied').textContent = d.P_current_count;
     document.getElementById('stat-reserved').textContent = d.P_reserve_count;
     document.getElementById('stat-available').textContent = d.P_available_count;
-    const nameEl = document.getElementById('parking-name');
-    if (nameEl) nameEl.value = d.P_name;
-    const feeEl = document.getElementById('parking-fee');
-    if (feeEl) feeEl.value = d.P_fee;
-    const capEl = document.getElementById('parking-capacity');
-    if (capEl) capEl.value = d.P_total_count;
     if (pieChart) {
         pieChart.setOption({ series: [{ data: [
             { value: d.P_current_count, name: '已占用', itemStyle: { color: '#ff4d4f' } },
@@ -114,13 +134,15 @@ async function loadParkedVehicles() {
     const plate = document.getElementById('parked-search-input')?.value.trim() || '';
     const res = await get('/api/vehicle/parked' + (plate ? '?plate=' + encodeURIComponent(plate) : ''));
     if (!res || !res.ok || !res.data.records || res.data.records.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#999">暂无在场车辆</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999">暂无在场车辆</td></tr>';
         return;
     }
     const canCheckOut = hasPerm('vehicle.checkout');
     tbody.innerHTML = res.data.records.map(r => `
         <tr>
             <td><strong>${escapeHtml(r.license_plate)}</strong></td>
+            <td>${escapeHtml(r.P_name || r.location)}</td>
+            <td>${r.spot_number ? r.spot_number+'号' : '-'}</td>
             <td>${formatDateTime(r.check_in_time)}</td>
             <td><span style="color:#ff4d4f;font-weight:500">${r.duration || '计算中...'}</span></td>
             <td>
@@ -161,7 +183,9 @@ async function loadBalance() {
 async function loadPassPlans() {
     const container = document.getElementById('pass-plans-container');
     if (!container || !hasPerm('balance.view')) return;
-    const res = await get('/api/pass-plans');
+    let url = '/api/pass-plans';
+    if (currentLot) url += '?P_name=' + encodeURIComponent(currentLot);
+    const res = await get(url);
     if (!res || !res.ok || !res.data.plans) {
         container.innerHTML = '<p style="color:#999">暂无可用套餐</p>';
         return;
@@ -259,11 +283,13 @@ async function handleCheckIn() {
     const billingSel = document.getElementById('billing-type');
     const billingType = (billingSel && billingSel.style.display !== 'none') ? billingSel.value : 'standard';
     if (!plate) { showError('vehicle-alert', '请输入车牌号'); return; }
-    const res = await post('/api/vehicle/checkin', { license_plate: plate, billing_type: billingType });
+    const body = { license_plate: plate, billing_type: 'standard' };
+    if (currentLot) body.P_name = currentLot;
+    const res = await post('/api/vehicle/checkin', body);
     if (res && res.ok) {
         showSuccess('vehicle-alert', `车辆 ${plate} 入库成功！`);
         document.getElementById('plate-input').value = '';
-        loadStatus(); loadRecentRecords();
+        loadStatus(); loadRecentRecords(); loadParkedVehicles();
     } else showError('vehicle-alert', res?.data?.error || '入库失败');
 }
 
@@ -274,7 +300,7 @@ async function handleCheckOut() {
     if (res && res.ok) {
         showSuccess('vehicle-alert', `车辆 ${plate} 出库成功！费用: ${formatFee(res.data.fee)}。请在10分钟内驶离`);
         document.getElementById('plate-input').value = '';
-        loadStatus(); loadRecentRecords(); loadBalance();
+        loadStatus(); loadRecentRecords(); loadBalance(); loadParkedVehicles();
     } else showError('vehicle-alert', res?.data?.error || '出库失败');
 }
 
@@ -282,107 +308,6 @@ async function handlePlateRecognize() {
     const res = await post('/api/plate/recognize', {});
     if (res && res.ok) showSuccess('vehicle-alert', res.data?.message || '识别完成');
     else showError('vehicle-alert', res?.data?.error || res?.error || '识别失败');
-}
-
-async function updateSettings() {
-    const fee = parseFloat(document.getElementById('parking-fee').value);
-    const capacity = parseInt(document.getElementById('parking-capacity').value);
-    const res = await put('/api/parking/settings', { fee, capacity });
-    if (res && res.ok) { showSuccess('vehicle-alert', '设置已更新'); loadStatus(); }
-    else showError('vehicle-alert', res?.data?.error || '更新失败');
-}
-
-// ========== My Vehicles (localStorage-based) ==========
-function getMyVehicles() {
-    try { return JSON.parse(localStorage.getItem('my_vehicles') || '[]'); } catch { return []; }
-}
-function saveMyVehicles(list) {
-    localStorage.setItem('my_vehicles', JSON.stringify(list));
-}
-async function addMyVehicle() {
-    const input = document.getElementById('my-vehicle-input');
-    if (!input) return;
-    const plate = input.value.trim().toUpperCase();
-    if (!plate) { showError('vehicle-alert', '请输入车牌号'); return; }
-
-    // Validate plate format via API
-    const valRes = await post('/api/plate/validate', { license_plate: plate });
-    if (valRes && valRes.ok && !valRes.data.valid) {
-        showError('my-vehicles-alert', valRes.data.message || '车牌号格式不正确');
-        return;
-    }
-
-    const list = getMyVehicles();
-    if (list.includes(plate)) { showError('my-vehicles-alert', '该车辆已添加'); return; }
-    if (list.length >= 10) { showError('my-vehicles-alert', '最多添加10个车辆'); return; }
-    list.push(plate);
-    saveMyVehicles(list);
-    input.value = '';
-    showSuccess('my-vehicles-alert', '车辆 ' + plate + ' 已添加');
-    renderMyVehicles();
-}
-function removeMyVehicle(plate) {
-    const list = getMyVehicles().filter(v => v !== plate);
-    saveMyVehicles(list);
-    renderMyVehicles();
-}
-async function renderMyVehicles() {
-    const container = document.getElementById('my-vehicles-list');
-    if (!container) return;
-    const list = getMyVehicles();
-    if (list.length === 0) {
-        container.innerHTML = '<p style="color:#999;font-size:13px">暂无车辆，请添加您的车牌号</p>';
-        return;
-    }
-
-    // Fetch current status for all vehicles
-    const statusRes = await get('/api/vehicle/status');
-    const statusMap = {};
-    if (statusRes && statusRes.ok && statusRes.data.vehicles) {
-        statusRes.data.vehicles.forEach(v => { statusMap[v.license_plate] = v; });
-    }
-
-    const canCheckin = hasPerm('vehicle.checkin');
-    const canCheckout = hasPerm('vehicle.checkout');
-
-    container.innerHTML = list.map(plate => {
-        const info = statusMap[plate];
-        const isParked = info && info.is_parked;
-        const lastIn = info ? info.last_check_in : null;
-        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;border-bottom:1px solid #f0f0f0;font-size:13px">
-            <div>
-                <strong>${escapeHtml(plate)}</strong>
-                ${isParked
-                    ? '<span class="badge badge-primary" style="margin-left:6px">停放中</span>'
-                    : '<span class="badge badge-success" style="margin-left:6px">空闲</span>'}
-                ${lastIn ? '<span style="color:#bbb;font-size:11px;margin-left:6px">' + formatDateTime(lastIn) + '</span>' : ''}
-            </div>
-            <div>
-                ${isParked && canCheckout
-                    ? '<button class="btn btn-danger btn-xs" onclick="quickCheckOut(\'' + plate + '\')">出库</button>'
-                    : !isParked && canCheckin
-                    ? '<button class="btn btn-primary btn-xs" onclick="quickCheckIn(\'' + plate + '\')">入库</button>'
-                    : ''}
-                <button class="btn btn-default btn-xs" onclick="removeMyVehicle('${plate}')" title="移除" style="margin-left:4px">&times;</button>
-            </div>
-        </div>`;
-    }).join('');
-}
-
-async function quickCheckIn(plate) {
-    const res = await post('/api/vehicle/checkin', { license_plate: plate, billing_type: 'standard' });
-    if (res && res.ok) {
-        showSuccess('my-vehicles-alert', '车辆 ' + plate + ' 入库成功！');
-        renderMyVehicles(); loadStatus(); loadRecentRecords();
-    } else showError('my-vehicles-alert', res?.data?.error || '入库失败');
-}
-
-async function quickCheckOut(plate) {
-    const res = await post('/api/vehicle/checkout', { license_plate: plate });
-    if (res && res.ok) {
-        showSuccess('my-vehicles-alert', '车辆 ' + plate + ' 出库成功！费用: ' + formatFee(res.data.fee));
-        renderMyVehicles(); loadStatus(); loadRecentRecords(); loadBalance();
-    } else showError('my-vehicles-alert', res?.data?.error || '出库失败');
 }
 
 // ========== Recharge ==========
@@ -411,26 +336,18 @@ async function confirmRecharge() {
 }
 
 document.getElementById('plate-input')?.addEventListener('keydown', e => { if (e.key === 'Enter') handleCheckIn(); });
-document.getElementById('my-vehicle-input')?.addEventListener('keydown', e => { if (e.key === 'Enter') addMyVehicle(); });
 document.getElementById('parked-search-input')?.addEventListener('keydown', e => { if (e.key === 'Enter') loadParkedVehicles(); });
-
-// Show my-vehicles card for all authenticated users
-const myVehiclesCard = document.getElementById('card-my-vehicles');
-if (myVehiclesCard) myVehiclesCard.style.display = '';
 
 // Init
 applyPermUI();
 initPieChart();
-loadParkingLots();
-loadStatus();
+loadParkingLots();  // calls loadStatus() + loadPassPlans() after setting currentLot
 loadRecentRecords();
 loadBalance();
-loadPassPlans();
 loadBulletin();
 loadPrediction();
 loadInterceptionCount();
-renderMyVehicles();
 loadParkedVehicles();
 setInterval(() => { loadStatus(); }, 10000);
-setInterval(() => { renderMyVehicles(); loadPrediction(); loadInterceptionCount(); }, 30000);
+setInterval(() => { loadPrediction(); loadInterceptionCount(); }, 30000);
 setInterval(() => { loadParkedVehicles(); }, 15000);

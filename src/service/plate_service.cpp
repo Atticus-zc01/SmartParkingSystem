@@ -1,7 +1,5 @@
 #include "plate_service.h"
-#ifdef ENABLE_OPENCV
 #include "../plate_recognizer.h"
-#endif
 #include <mysql.h>
 #include <sstream>
 
@@ -13,20 +11,12 @@ PlateService& PlateService::instance() {
 PlateService::PlateResult PlateService::recognize(const std::string& image_data) {
     PlateResult result;
 
-#ifdef ENABLE_OPENCV
-    // Use the OpenCV-based plate recognizer
     auto recog_result = PlateRecognizer::instance().recognize(image_data);
 
     result.plate_number = recog_result.plate_number;
     result.confidence = recog_result.confidence;
     result.color = recog_result.plate_color;
     result.message = recog_result.message;
-#else
-    result.plate_number = "";
-    result.confidence = 0.0;
-    result.color = "unknown";
-    result.message = "车牌识别功能未启用（未安装 OpenCV）";
-#endif
 
     return result;
 }
@@ -139,14 +129,34 @@ PlateService::PlateRegistrationInfo PlateService::checkRegistration(const std::s
 }
 
 bool PlateService::validatePlate(const std::string& plate) {
-    if (plate.size() < 9 || plate.size() > 10) return false;
+    // Standard plate: province(1) + letter(1) + 5 alphanum = 7 Chinese chars → 9-10 UTF-8 bytes
+    // New energy plate: province(1) + letter(1) + 6 alphanum = 8 Chinese chars → 10-11 UTF-8 bytes
+    if (plate.size() < 9 || plate.size() > 11) return false;
 
+    // Verify province prefix (each Chinese char is 3 bytes in UTF-8)
     const std::string provinces = "京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤川青藏琼宁";
+    bool validProvince = false;
     for (size_t i = 0; i < provinces.size(); i += 3) {
         if (plate.substr(0, 3) == provinces.substr(i, 3)) {
-            if (plate[3] >= 'A' && plate[3] <= 'Z')
-                return true;
+            validProvince = true;
+            break;
         }
     }
-    return false;
+    if (!validProvince) return false;
+
+    // Position 3 must be an uppercase letter (the city/region code)
+    if (plate[3] < 'A' || plate[3] > 'Z') return false;
+
+    // Remaining characters (positions 4+) must be alphanumeric (A-Z or 0-9)
+    for (size_t i = 4; i < plate.size(); i++) {
+        char c = plate[i];
+        if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')))
+            return false;
+    }
+
+    // Length check: 7 chars (9 bytes) or 8 chars (10-11 bytes, new energy plates may include D/F)
+    // 7-char: province(3) + letter(1) + 5 digits(5) = 9 bytes minimum
+    // 8-char: province(3) + letter(1) + 6 alphanum(6) = 10 bytes (new energy)
+    // Allow 9-11 bytes to be safe
+    return true;
 }

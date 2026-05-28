@@ -29,7 +29,7 @@ async function searchRecords() {
     const tbody = document.getElementById('records-table');
 
     if (!res || !res.ok) {
-        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#999">查询失败</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#999">查询失败</td></tr>';
         return;
     }
 
@@ -37,7 +37,7 @@ async function searchRecords() {
     document.getElementById('record-count').textContent = `共 ${records.length} 条记录`;
 
     if (records.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#999">暂无记录</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#999">暂无记录</td></tr>';
         return;
     }
 
@@ -48,7 +48,8 @@ async function searchRecords() {
             <td>${formatDateTime(r.check_in_time)}</td>
             <td>${formatDateTime(r.check_out_time)}</td>
             <td>${formatFee(r.fee)}</td>
-            <td>${r.location}</td>
+            <td>${r.P_name || r.location}</td>
+            <td>${r.spot_number ? r.spot_number+'号' : '-'}</td>
             <td><span class="badge badge-primary">${billingTypes[r.billing_type] || r.billing_type}</span></td>
             <td>
                 ${canDelete ? `<button class="btn btn-danger btn-sm" onclick="deleteRecord(${r.id})">删除</button>` : '<span style="color:#999">-</span>'}

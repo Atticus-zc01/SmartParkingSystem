@@ -12,6 +12,8 @@ class VehicleService : public CrudService<CarRecord> {
 public:
     static VehicleService& instance();
     bool checkIn(const std::string& plate, const std::string& billing_type, std::string& error);
+    bool checkIn(const std::string& plate, const std::string& billing_type, const std::string& P_name, std::string& error);
+    bool checkIn(const std::string& plate, const std::string& billing_type, const std::string& P_name, int spotNum, std::string& error);
     bool checkOut(const std::string& plate, int userId, double& fee, CarRecord& record, std::string& error);
     std::vector<CarRecord> queryRecords(const std::string& plate, const std::string& start_date, const std::string& end_date);
     bool deleteRecord(int id);
@@ -22,6 +24,6 @@ protected:
 private:
     VehicleService() = default;
     double calculateFee(MYSQL* mysql, const std::string& plate, const std::string& check_in_time,
-                        const std::string& billing_type, int reservationId = 0);
+                        const std::string& billing_type, const std::string& P_name, int reservationId = 0);
     bool validatePlate(const std::string& plate);
 };

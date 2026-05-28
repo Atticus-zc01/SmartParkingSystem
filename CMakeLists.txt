@@ -102,10 +102,11 @@ if(WIN32)
             $<TARGET_FILE_DIR:smart_parking>
     )
     if(OpenCV_FOUND)
-        add_custom_command(TARGET smart_parking POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${OpenCV_DIR}/../bin/opencv_world460.dll"
-                $<TARGET_FILE_DIR:smart_parking>
-        )
+        file(GLOB OPENCV_DLL "${OpenCV_DIR}/x64/vc16/bin/opencv_world*.dll")
+        foreach(DLL ${OPENCV_DLL})
+            add_custom_command(TARGET smart_parking POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${DLL}" $<TARGET_FILE_DIR:smart_parking>
+            )
+        endforeach()
     endif()
 endif()
