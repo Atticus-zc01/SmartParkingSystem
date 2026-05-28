@@ -18,8 +18,9 @@ function switchTab(tab, ev) {
     if(ev&&ev.target) ev.target.classList.add('active');
     document.getElementById('tab-'+tab).classList.remove('hidden');
     if(tab==='users') loadUsers(); else if(tab==='recharge') loadUsersForRecharge();
-    else if(tab==='billing') loadBillingRules(); else if(tab==='passes') loadPasses();
-    else if(tab==='plans') loadPlans(); else if(tab==='vehicles') loadVehicles('all');
+    else if(tab==='billing') { loadBillingLotSelector(); loadBillingRules(); }
+    else if(tab==='plans') { loadPlansLotSelector(); loadPlans(); loadPasses(); }
+    else if(tab==='vehicles') loadVehicles('all');
     else if(tab==='blacklist') { loadBlacklist(); loadInterceptions(); }
     else if(tab==='reports') { loadReports();
         const today = new Date().toISOString().split('T')[0];
@@ -28,7 +29,26 @@ function switchTab(tab, ev) {
         if (!document.getElementById('export-end').value) document.getElementById('export-end').value = today;
     }
     else if(tab==='notice') loadBulletins();
-    else if(tab==='feedback') loadConversations();
+    else if(tab==='settings') { /* static content, no loading needed */ }
+}
+
+async function loadBillingLotSelector() {
+    const sel = document.getElementById('billing-lot-select');
+    if (!sel || sel.options.length > 0) return;
+    const res = await get('/api/parking/list');
+    if (res && res.ok && res.data.lots) {
+        sel.innerHTML = '<option value="">全部</option>' + res.data.lots.map(l =>
+            `<option value="${escapeHtml(l.P_name)}">${escapeHtml(l.P_name)}</option>`).join('');
+    }
+}
+async function loadPlansLotSelector() {
+    const sel = document.getElementById('plans-lot-select');
+    if (!sel || sel.options.length > 0) return;
+    const res = await get('/api/parking/list');
+    if (res && res.ok && res.data.lots) {
+        sel.innerHTML = '<option value="">全部</option>' + res.data.lots.map(l =>
+            `<option value="${escapeHtml(l.P_name)}">${escapeHtml(l.P_name)}</option>`).join('');
+    }
 }
 
 // ========== Users ==========
@@ -92,50 +112,95 @@ async function doRecharge() {
 async function loadPlans() {
     const res=await get('/api/pass-plans'); const tbody=document.getElementById('plans-table');
     if(!res||!res.ok){tbody.innerHTML='<tr><td colspan="6">加载失败</td></tr>';return;}
-    const plans=res.data.plans||[];
+    let plans=res.data.plans||[];
+    const lotSel=document.getElementById('plans-lot-select');
+    if(lotSel&&lotSel.value) plans=plans.filter(p=>p.P_name===lotSel.value);
     tbody.innerHTML=plans.map(p=>`<tr data-plan-id="${p.id}">
         <td>${escapeHtml(p.plan_name)}</td><td>${p.duration_days}天</td><td>¥${parseFloat(p.price).toFixed(2)}</td>
-        <td>${escapeHtml(p.description||'-')}</td><td>${p.is_active?'<span class="badge badge-success">启用</span>':'<span class="badge badge-danger">禁用</span>'}</td>
+        <td>${escapeHtml(p.P_name||'-')}</td><td>${p.is_active?'<span class="badge badge-success">启用</span>':'<span class="badge badge-danger">禁用</span>'}</td>
         <td><button class="btn btn-default btn-sm btn-edit-plan">编辑</button><button class="btn btn-danger btn-sm btn-delete-plan">删除</button></td></tr>`).join('');
+}
+async function populateLotSelect(selId, selected) {
+    const sel = document.getElementById(selId);
+    if (!sel || sel.options.length > 0) { if (selected && sel) sel.value = selected; return; }
+    const res = await get('/api/parking/list');
+    if (res && res.ok && res.data.lots) {
+        sel.innerHTML = res.data.lots.map(l =>
+            `<option value="${escapeHtml(l.P_name)}">${escapeHtml(l.P_name)}</option>`).join('');
+    }
+    if (selected) sel.value = selected;
 }
 async function savePlan() {
     const id=document.getElementById('edit-plan-id').value;
-    const body={plan_name:document.getElementById('plan-name').value.trim(),duration_days:parseInt(document.getElementById('plan-days').value),price:parseFloat(document.getElementById('plan-price').value),description:document.getElementById('plan-desc').value.trim(),is_active:document.getElementById('plan-active').checked};
+    const body={plan_name:document.getElementById('plan-name').value.trim(),duration_days:parseInt(document.getElementById('plan-days').value),price:parseFloat(document.getElementById('plan-price').value),description:document.getElementById('plan-desc').value.trim(),is_active:document.getElementById('plan-active').checked,P_name:document.getElementById('plan-lot').value};
     let r; if(id) r=await put('/api/pass-plans/'+id,body); else r=await post('/api/pass-plans',body);
     if(r&&r.ok){hideModal('plan-modal');showSuccess('alert-box','套餐已保存');loadPlans();} else alert(r?.data?.error||'保存失败');
 }
-function openPlanModal(planId, name, days, price, desc, active) {
+async function openPlanModal(planId, name, days, price, desc, active, pname) {
+    await populateLotSelect('plan-lot', pname);
     document.getElementById('edit-plan-id').value=planId||''; document.getElementById('plan-name').value=name||'';
     document.getElementById('plan-days').value=days||30; document.getElementById('plan-price').value=price||0;
-    document.getElementById('plan-desc').value=desc||''; document.getElementById('plan-active').checked=active!==false; showModal('plan-modal');
+    document.getElementById('plan-desc').value=desc||''; document.getElementById('plan-active').checked=active!==false;
+    if(pname) document.getElementById('plan-lot').value = pname;
+    showModal('plan-modal');
 }
 
 // ========== Billing Rules ==========
 async function loadBillingRules() {
     const res=await get('/api/parking/billing-rules'); const tbody=document.getElementById('billing-table');
     if(!res||!res.ok){tbody.innerHTML='<tr><td colspan="8">加载失败</td></tr>';return;}
-    tbody.innerHTML=(res.data.rules||[]).map(r=>`<tr data-billing-id="${r.id}" data-billing-type="${escapeHtml(r.rule_type)}" data-tier-config="${escapeHtml(r.tier_config||'')}">
+    let rules=res.data.rules||[];
+    const lotSel=document.getElementById('billing-lot-select');
+    if(lotSel&&lotSel.value) rules=rules.filter(r=>r.P_name===lotSel.value);
+    tbody.innerHTML=rules.map(r=>`<tr data-billing-id="${r.id}" data-billing-type="${escapeHtml(r.rule_type)}" data-tier-config="${escapeHtml(r.tier_config||'')}">
         <td>${escapeHtml(r.rule_name)}</td><td>${escapeHtml(r.rule_type)}</td><td>${r.free_minutes}</td>
         <td>${parseFloat(r.hourly_rate).toFixed(2)}</td><td>${parseFloat(r.max_daily_fee||0).toFixed(2)}</td>
-        <td>${escapeHtml(r.description||'-')}</td><td>${r.is_active?'<span class="badge badge-success">启用</span>':'<span class="badge badge-danger">禁用</span>'}</td>
+        <td>${escapeHtml(r.description||'-')}</td><td>${escapeHtml(r.P_name||'-')}</td><td>${r.is_active?'<span class="badge badge-success">启用</span>':'<span class="badge badge-danger">禁用</span>'}</td>
         <td><button class="btn btn-default btn-sm btn-edit-billing">编辑</button></td></tr>`).join('');
 }
-function editBillingRule(row) {
+async function openBillingAdd() {
+    document.getElementById('edit-billing-id').value = '';
+    document.getElementById('edit-billing-type').value = 'standard';
+    document.getElementById('billing-name').value = '';
+    document.getElementById('billing-free').value = '30';
+    document.getElementById('billing-rate').value = '5.00';
+    document.getElementById('billing-max').value = '50';
+    document.getElementById('billing-desc').value = '';
+    document.getElementById('billing-tier-config').value = '';
+    document.getElementById('billing-active').checked = true;
+    document.getElementById('tier-config-group').style.display = 'none';
+    document.getElementById('btn-delete-billing').style.display = 'none';
+    await populateLotSelect('billing-lot-modal', '');
+    showModal('billing-modal');
+}
+async function editBillingRule(row) {
     const type=row.dataset.billingType;
+    const pname = row.cells[6].textContent.trim();
+    await populateLotSelect('billing-lot-modal', pname === '-' ? '' : pname);
     document.getElementById('edit-billing-id').value=parseInt(row.dataset.billingId); document.getElementById('billing-name').value=row.cells[0].textContent.trim();
     document.getElementById('billing-free').value=row.cells[2].textContent.trim(); document.getElementById('billing-rate').value=row.cells[3].textContent.trim();
     document.getElementById('billing-max').value=row.cells[4].textContent.trim()==='-'?'':row.cells[4].textContent.trim();
     document.getElementById('billing-desc').value=row.cells[5].textContent.trim()==='-'?'':row.cells[5].textContent.trim();
-    document.getElementById('billing-active').checked=row.cells[6].textContent.includes('启用'); document.getElementById('edit-billing-type').value=type;
+    document.getElementById('billing-active').checked=row.cells[7].textContent.includes('启用'); document.getElementById('edit-billing-type').value=type;
     const tg=document.getElementById('tier-config-group'), tc=document.getElementById('billing-tier-config');
-    tg.style.display=type==='tiered'?'':'none'; tc.value=row.dataset.tierConfig||''; showModal('billing-modal');
+    tg.style.display=type==='tiered'?'':'none'; tc.value=row.dataset.tierConfig||'';
+    document.getElementById('btn-delete-billing').style.display = 'inline-block';
+    showModal('billing-modal');
 }
 async function saveBillingRule() {
     const id=document.getElementById('edit-billing-id').value, type=document.getElementById('edit-billing-type').value;
-    const body={rule_name:document.getElementById('billing-name').value.trim(),rule_type:type,free_minutes:parseInt(document.getElementById('billing-free').value),hourly_rate:parseFloat(document.getElementById('billing-rate').value),max_daily_fee:parseFloat(document.getElementById('billing-max').value)||0,description:document.getElementById('billing-desc').value.trim(),is_active:document.getElementById('billing-active').checked};
+    const body={rule_name:document.getElementById('billing-name').value.trim(),rule_type:type,free_minutes:parseInt(document.getElementById('billing-free').value),hourly_rate:parseFloat(document.getElementById('billing-rate').value),max_daily_fee:parseFloat(document.getElementById('billing-max').value)||0,description:document.getElementById('billing-desc').value.trim(),is_active:document.getElementById('billing-active').checked,P_name:document.getElementById('billing-lot-modal').value};
     if(type==='tiered') body.tier_config=document.getElementById('billing-tier-config').value.trim();
-    const r=await put('/api/parking/billing-rules/'+id,body);
-    if(r&&r.ok){hideModal('billing-modal');showSuccess('alert-box','规则已更新');loadBillingRules();} else alert(r?.data?.error||'更新失败');
+    let r;
+    if(id) r=await put('/api/parking/billing-rules/'+id,body);
+    else r=await post('/api/parking/billing-rules',body);
+    if(r&&r.ok){hideModal('billing-modal');showSuccess('alert-box',id?'规则已更新':'规则已添加');loadBillingRules();} else alert(r?.data?.error||'保存失败');
+}
+async function deleteBillingRule() {
+    const id=document.getElementById('edit-billing-id').value;
+    if(!confirm('确定删除此计费规则？')) return;
+    const r=await request('/api/parking/billing-rules/'+id, {method:'DELETE'});
+    if(r&&r.ok){hideModal('billing-modal');showSuccess('alert-box','规则已删除');loadBillingRules();} else alert(r?.data?.error||'删除失败');
 }
 
 // ========== Monthly Passes ==========
@@ -394,96 +459,3 @@ loadUsers();
 
 // ========== Feedback / Chat ==========
 let currentChatUserId = 0;
-let feedbackPollTimer = null;
-
-async function loadConversations() {
-    const res = await get('/api/message/conversations');
-    const container = document.getElementById('conversation-list');
-    if (!res || !res.ok) { container.innerHTML = '<div style="color:#999">加载失败</div>'; return; }
-    const convos = res.data.conversations || [];
-    if (convos.length === 0) { container.innerHTML = '<div style="color:#999">暂无用户消息</div>'; return; }
-    container.innerHTML = convos.map(c => {
-        const name = c.truename || c.username;
-        const initial = name.charAt(0).toUpperCase();
-        const msg = (c.last_message || '').substring(0, 30);
-        const time = (c.last_time || '').split(' ')[1] || '';
-        const unread = c.unread_count > 0 ? `<span class="badge badge-danger" style="font-size:10px;margin-left:4px">${c.unread_count}</span>` : '';
-        const active = c.user_id === currentChatUserId ? 'background:#e6f7ff;' : '';
-        return `<div onclick="selectConversation(${c.user_id})" style="padding:10px;border-bottom:1px solid #f0f0f0;cursor:pointer;${active}">
-            <div style="display:flex;align-items:center;gap:8px;">
-                <div style="width:32px;height:32px;border-radius:50%;background:#00aa7f;color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0">${initial}</div>
-                <div style="flex:1;overflow:hidden;">
-                    <div style="font-weight:600;font-size:13px;">${escapeHtml(name)}${unread}</div>
-                    <div style="font-size:11px;color:#999;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(msg)}</div>
-                </div>
-                <div style="font-size:10px;color:#bbb;flex-shrink:0">${time.substring(0,5)}</div>
-            </div>
-        </div>`;
-    }).join('');
-    if (feedbackPollTimer) clearInterval(feedbackPollTimer);
-    feedbackPollTimer = setInterval(() => {
-        loadConversations();
-        if (currentChatUserId) loadFeedbackMessages(currentChatUserId);
-    }, 3000);
-}
-
-async function selectConversation(userId) {
-    currentChatUserId = userId;
-    const res = await get('/api/message/conversations');
-    if (res && res.ok) {
-        const convos = res.data.conversations || [];
-        const c = convos.find(x => x.user_id === userId);
-        if (c) {
-            const name = c.truename || c.username;
-            const initial = name.charAt(0).toUpperCase();
-            document.getElementById('feedback-avatar').textContent = initial;
-            document.getElementById('feedback-username').textContent = name;
-            document.getElementById('feedback-userdetail').textContent = `ID: ${c.user_id}`;
-            document.getElementById('feedback-truename').textContent = c.truename || '-';
-            document.getElementById('feedback-telephone').textContent = c.telephone || '-';
-            document.getElementById('feedback-role').textContent = roleLabel(c.role);
-            document.getElementById('feedback-balance').textContent = '¥' + parseFloat(c.balance||0).toFixed(2);
-            document.getElementById('feedback-raw-username').textContent = c.username || '-';
-            document.getElementById('feedback-created').textContent = formatDateTime(c.created_at).substring(0, 10);
-            document.getElementById('feedback-user-info').style.display = '';
-        }
-    }
-    loadFeedbackMessages(userId);
-    loadConversations();
-}
-
-async function loadFeedbackMessages(userId) {
-    const res = await get('/api/message/history?user_id=' + userId);
-    const container = document.getElementById('feedback-messages');
-    if (!res || !res.ok) { container.innerHTML = '<div style="text-align:center;color:#999">加载失败</div>'; return; }
-    const messages = res.data.messages || [];
-    if (messages.length === 0) { container.innerHTML = '<div style="text-align:center;color:#999">暂无消息</div>'; return; }
-    let html = '', lastDate = '';
-    messages.forEach(m => {
-        const date = (m.created_at || '').split(' ')[0];
-        const time = (m.created_at || '').split(' ')[1] || '';
-        if (date && date !== lastDate) { html += `<div style="text-align:center;font-size:11px;color:#999;padding:4px 0">${date}</div>`; lastDate = date; }
-        const isSent = m.sender_id === user.id;
-        html += `<div style="display:flex;${isSent ? 'justify-content:flex-end' : 'justify-content:flex-start'};margin-bottom:6px;">
-            <div style="max-width:70%;padding:8px 12px;border-radius:10px;font-size:13px;${isSent ? 'background:#00aa7f;color:#fff;border-bottom-right-radius:2px' : 'background:#fff;color:#333;border-bottom-left-radius:2px;box-shadow:0 1px 2px rgba(0,0,0,0.05)'}">
-                ${escapeHtml(m.content)}
-                <div style="font-size:10px;margin-top:2px;opacity:0.7">${time.substring(0,5)}</div>
-            </div>
-        </div>`;
-    });
-    container.innerHTML = html;
-    container.scrollTop = container.scrollHeight;
-}
-
-async function sendAdminReply() {
-    const input = document.getElementById('feedback-reply-input');
-    const content = input.value.trim();
-    if (!content || !currentChatUserId) return;
-    input.value = '';
-    const res = await post('/api/message/send', { receiver_id: currentChatUserId, content });
-    if (res && res.ok) { loadFeedbackMessages(currentChatUserId); loadConversations(); }
-}
-
-document.getElementById('feedback-reply-input')?.addEventListener('keydown', e => {
-    if (e.key === 'Enter') sendAdminReply();
-});

@@ -43,9 +43,7 @@ std::vector<uchar> PlateRecognizer::base64Decode(const std::string& data) {
     return out;
 }
 
-#ifdef ENABLE_OPENCV
-
-// ========== HyperLPR3 Bridge ==========
+// ========== Python discovery (works with or without OpenCV) ==========
 static std::string findPython() {
 #ifdef _WIN32
     FILE* fp = _popen("where python 2>nul", "r");
@@ -85,62 +83,61 @@ static std::string jsonField(const std::string& json, const std::string& key) {
     auto colon = json.find(':', pos + search.size());
     if (colon == std::string::npos) return "";
 
-    // Find start of value (skip whitespace)
     auto vs = colon + 1;
     while (vs < json.size() && (json[vs] == ' ' || json[vs] == '\t')) vs++;
     if (vs >= json.size()) return "";
 
-    // String value
     if (json[vs] == '"') {
         vs++;
         auto ve = json.find('"', vs);
         if (ve == std::string::npos) return "";
         return json.substr(vs, ve - vs);
     }
-    // Numeric/boolean value
     auto ve = json.find_first_of(",}\n\r \t", vs);
     if (ve == std::string::npos) return json.substr(vs);
     return json.substr(vs, ve - vs);
 }
 
-// ========== Call HyperLPR3 ==========
-static PlateRecognizer::RecognitionResult ocrWithHyperLPR(const cv::Mat& img) {
-    PlateRecognizer::RecognitionResult result;
-
-    // Save image to temp file
-    std::string tmpdir;
+// ========== Get temp directory ==========
+static std::string getTempDir() {
 #ifdef _WIN32
     char tmpbuf[MAX_PATH];
     GetTempPathA(MAX_PATH, tmpbuf);
-    tmpdir = tmpbuf;
+    return tmpbuf;
 #else
-    tmpdir = "/tmp/";
+    return "/tmp/";
 #endif
-    std::string imgpath = tmpdir + "sp_hyperlpr.png";
-    if (!cv::imwrite(imgpath, img)) {
-        result.message = "保存图片失败";
-        return result;
-    }
+}
+
+// ========== Call Python bridge with saved image ==========
+static PlateRecognizer::RecognitionResult callPythonBridge(const std::string& imgPath) {
+    PlateRecognizer::RecognitionResult result;
 
     std::string python = findPython();
     std::string script = findHyperLprBridge();
-    std::string cmd = python + " -u \"" + script + "\" \"" + imgpath + "\"";
+    std::string cmd = python + " -u \"" + script + "\" \"" + imgPath + "\"";
 
     std::string resp;
+#ifdef _WIN32
     FILE* fp = _popen(cmd.c_str(), "r");
+#else
+    FILE* fp = popen(cmd.c_str(), "r");
+#endif
     if (fp) {
         char buf[4096];
         while (fgets(buf, sizeof(buf), fp)) resp += buf;
+#ifdef _WIN32
         _pclose(fp);
+#else
+        pclose(fp);
+#endif
     }
-    std::remove(imgpath.c_str());
 
     if (resp.empty()) {
-        result.message = "OCR 服务调用失败";
+        result.message = "OCR 服务调用失败，请检查 Python 环境";
         return result;
     }
 
-    // Parse JSON response
     result.plate_number = jsonField(resp, "plate_number");
     result.plate_color = jsonField(resp, "color");
     std::string conf_str = jsonField(resp, "confidence");
@@ -152,32 +149,55 @@ static PlateRecognizer::RecognitionResult ocrWithHyperLPR(const cv::Mat& img) {
     return result;
 }
 
-// Stub implementations (HyperLPR3 handles detection internally)
-cv::Mat PlateRecognizer::preprocess(const cv::Mat&) { return cv::Mat(); }
-std::vector<cv::Rect> PlateRecognizer::detectPlateCandidates(const cv::Mat&) { return {}; }
-std::string PlateRecognizer::analyzePlateColor(const cv::Mat&) { return "unknown"; }
-std::string PlateRecognizer::recognizeCharacters(const cv::Mat&, double&) { return ""; }
-
-#endif // ENABLE_OPENCV
-
-// ========== Main API entry points ==========
+// ========== Main API: recognize from base64 image (always available) ==========
 PlateRecognizer::RecognitionResult PlateRecognizer::recognize(const std::string& image_base64) {
     RecognitionResult r;
-#ifdef ENABLE_OPENCV
+
     auto data = base64Decode(image_base64);
     if (data.empty()) { r.message = "图片解码失败"; return r; }
-    cv::Mat img = cv::imdecode(data, cv::IMREAD_COLOR);
-    if (img.empty()) { r.message = "图片解码失败"; return r; }
-    return ocrWithHyperLPR(img);
-#else
-    r.message = "车牌识别功能未启用";
-    return r;
+
+    // Save decoded bytes to a temp file
+    std::string imgpath = getTempDir() + "sp_camera_capture.jpg";
+    {
+        std::ofstream f(imgpath, std::ios::binary);
+        if (!f) { r.message = "保存图片失败"; return r; }
+        f.write(reinterpret_cast<const char*>(data.data()), data.size());
+    }
+
+#ifdef ENABLE_OPENCV
+    // With OpenCV: load image, resize if needed, re-save
+    cv::Mat img = cv::imread(imgpath, cv::IMREAD_COLOR);
+    if (!img.empty()) {
+        if (img.cols > 1280) {
+            double s = 1280.0 / img.cols;
+            cv::resize(img, img, cv::Size(1280, (int)(img.rows * s)));
+        }
+        cv::imwrite(imgpath, img);
+    }
 #endif
+
+    r = callPythonBridge(imgpath);
+    std::remove(imgpath.c_str());
+    return r;
 }
 
 #ifdef ENABLE_OPENCV
+// ========== OpenCV-specific: recognize from cv::Mat frame ==========
+static PlateRecognizer::RecognitionResult ocrWithHyperLPR(const cv::Mat& img) {
+    PlateRecognizer::RecognitionResult result;
+
+    std::string imgpath = getTempDir() + "sp_hyperlpr.png";
+    if (!cv::imwrite(imgpath, img)) {
+        result.message = "保存图片失败";
+        return result;
+    }
+
+    result = callPythonBridge(imgpath);
+    std::remove(imgpath.c_str());
+    return result;
+}
+
 PlateRecognizer::RecognitionResult PlateRecognizer::recognize(const cv::Mat& frame) {
-    // Resize large images for faster processing
     cv::Mat working = frame;
     if (frame.cols > 1280) {
         double s = 1280.0 / frame.cols;
@@ -185,4 +205,10 @@ PlateRecognizer::RecognitionResult PlateRecognizer::recognize(const cv::Mat& fra
     }
     return ocrWithHyperLPR(working);
 }
-#endif
+
+// Stub implementations (HyperLPR3 handles detection/color internally)
+cv::Mat PlateRecognizer::preprocess(const cv::Mat&) { return cv::Mat(); }
+std::vector<cv::Rect> PlateRecognizer::detectPlateCandidates(const cv::Mat&) { return {}; }
+std::string PlateRecognizer::analyzePlateColor(const cv::Mat&) { return "unknown"; }
+std::string PlateRecognizer::recognizeCharacters(const cv::Mat&, double&) { return ""; }
+#endif // ENABLE_OPENCV

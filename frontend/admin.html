@@ -13,6 +13,8 @@
             <div class="sidebar-logo"><h2>Smart Parking</h2><p>智慧停车管理系统</p></div>
             <div class="sidebar-nav">
                 <a class="nav-item" id="nav-dashboard" href="/dashboard.html"><span class="icon">&#9776;</span> 主面板</a>
+                <a class="nav-item" id="nav-parking" href="/parking.html"><span class="icon">&#127359;</span> 停车场</a>
+                <a class="nav-item" id="nav-checkin" href="/checkin.html"><span class="icon">&#9971;</span> 车辆入库</a>
                 <a class="nav-item" id="nav-vehicles" href="/vehicles.html"><span class="icon">&#128663;</span> 车辆信息</a>
                 <a class="nav-item active" id="nav-admin" href="/admin.html"><span class="icon">&#128100;</span> 管理页面</a>
                 <a class="nav-item" id="nav-reservation" href="/reservation.html"><span class="icon">&#128197;</span> 预约管理</a>
@@ -34,11 +36,10 @@
                 <div class="tab" onclick="switchTab('plans',event)">套餐管理</div>
                 <div class="tab" onclick="switchTab('billing',event)">计费规则</div>
                 <div class="tab" onclick="switchTab('vehicles',event)">车辆管理</div>
-                <div class="tab" onclick="switchTab('passes',event)">月卡管理</div>
                 <div class="tab" onclick="switchTab('blacklist',event)">黑名单</div>
                 <div class="tab" onclick="switchTab('reports',event)">收入统计</div>
                 <div class="tab" onclick="switchTab('notice',event)">公告编辑</div>
-                <div class="tab" onclick="switchTab('feedback',event)">用户反馈</div>
+                <div class="tab" onclick="switchTab('settings',event)">系统设置</div>
             </div>
             <div id="alert-box"></div>
 
@@ -82,28 +83,32 @@
             <div id="tab-plans" class="hidden">
                 <div class="card">
                     <div class="card-title">套餐管理 <button class="btn btn-primary btn-sm" style="float:right" onclick="openPlanModal('','',30,0,'',true)">添加套餐</button></div>
+                    <div style="margin-bottom:8px;"><label style="font-size:13px;">停车场：</label>
+                        <select id="plans-lot-select" class="form-control" style="width:160px;display:inline;" onchange="loadPlans()"></select>
+                    </div>
                     <div class="table-wrapper">
                         <table>
-                            <thead>
-                                <tr>
-                                    <th>套餐名</th>
-                                    <th>天数</th>
-                                    <th>价格</th>
-                                    <th>描述</th>
-                                    <th>状态</th>
-                                    <th>操作</th>
-                                </tr>
-                            </thead>
+                            <thead><tr><th>套餐名</th><th>天数</th><th>价格</th><th>停车场</th><th>状态</th><th>操作</th></tr></thead>
                             <tbody id="plans-table"><tr><td colspan="6">加载中...</td></tr></tbody>
                         </table>
                     </div>
+                </div>
+                <div class="card" style="margin-top:16px;">
+                    <div class="card-title">已购月卡</div>
+                    <div class="table-wrapper"><table>
+                        <thead><tr><th>ID</th><th>车牌</th><th>类型</th><th>生效</th><th>到期</th><th>费用</th><th>状态</th><th>操作</th></tr></thead>
+                        <tbody id="passes-table"><tr><td colspan="8">加载中...</td></tr></tbody>
+                    </table></div>
                 </div>
             </div>
 
             <!-- Billing Tab -->
             <div id="tab-billing" class="hidden">
                 <div class="card">
-                    <div class="card-title">计费规则</div>
+                    <div class="card-title">计费规则 <button class="btn btn-primary btn-sm" style="float:right" onclick="openBillingAdd()">添加规则</button></div>
+                    <div style="margin-bottom:8px;"><label style="font-size:13px;">停车场：</label>
+                        <select id="billing-lot-select" class="form-control" style="width:160px;display:inline;" onchange="loadBillingRules()"></select>
+                    </div>
                     <div class="table-wrapper">
                         <table>
                             <thead>
@@ -114,17 +119,18 @@
                                     <th>费率(元/时)</th>
                                     <th>日封顶</th>
                                     <th>描述</th>
+                                    <th>停车场</th>
                                     <th>状态</th>
                                     <th>操作</th>
                                 </tr>
                             </thead>
-                            <tbody id="billing-table"><tr><td colspan="8">加载中...</td></tr></tbody>
+                            <tbody id="billing-table"><tr><td colspan="9">加载中...</td></tr></tbody>
                         </table>
                     </div>
                 </div>
             </div>
 
-            <!-- Passes Tab -->
+            <!-- Passes Tab (merged into plans, content kept for JS) -->
             <div id="tab-passes" class="hidden">
                 <div class="card">
                     <div class="card-title">月卡管理 <button class="btn btn-primary btn-sm" style="float:right" onclick="openPassModal(0)">添加月卡</button></div>
@@ -264,38 +270,13 @@
             </div>
 
             <!-- Feedback Tab -->
-            <div id="tab-feedback" class="hidden">
-                <div style="display:flex;gap:16px;height:calc(100vh - 240px);">
-                    <div style="width:280px;overflow-y:auto;border-right:1px solid #f0f0f0;padding-right:12px;">
-                        <div style="font-weight:600;margin-bottom:12px;">会话列表</div>
-                        <div id="conversation-list"><div style="color:#999">暂无会话</div></div>
-                    </div>
-                    <div style="flex:1;display:flex;flex-direction:column;">
-                        <div id="feedback-user-info" class="card" style="margin-bottom:12px;display:none;padding:0;">
-                            <div style="display:flex;gap:16px;align-items:flex-start;padding:12px;">
-                                <div style="width:48px;height:48px;font-size:20px;display:flex;align-items:center;justify-content:center;background:#00aa7f;color:#fff;border-radius:50%;flex-shrink:0;" id="feedback-avatar">U</div>
-                                <div style="flex:1;">
-                                    <div style="font-weight:600;font-size:15px;" id="feedback-username"></div>
-                                    <div style="font-size:12px;color:#999;margin-top:2px;" id="feedback-userdetail"></div>
-                                </div>
-                            </div>
-                            <div style="border-top:1px solid #f0f0f0;padding:10px 12px;display:grid;grid-template-columns:1fr 1fr;gap:6px 16px;font-size:12px;">
-                                <div><span style="color:#999;">真实姓名：</span><span id="feedback-truename"></span></div>
-                                <div><span style="color:#999;">手机号：</span><span id="feedback-telephone"></span></div>
-                                <div><span style="color:#999;">角色：</span><span id="feedback-role"></span></div>
-                                <div><span style="color:#999;">余额：</span><span id="feedback-balance"></span></div>
-                                <div><span style="color:#999;">用户名：</span><span id="feedback-raw-username"></span></div>
-                                <div><span style="color:#999;">注册时间：</span><span id="feedback-created"></span></div>
-                            </div>
-                        </div>
-                        <div id="feedback-messages" style="flex:1;overflow-y:auto;padding:12px;background:#fafafa;border-radius:8px;">
-                            <div style="text-align:center;color:#999;">选择左侧会话查看消息</div>
-                        </div>
-                        <div style="display:flex;gap:8px;margin-top:8px;">
-                            <input type="text" id="feedback-reply-input" class="form-control" placeholder="输入回复内容..." style="flex:1;">
-                            <button class="btn btn-primary" onclick="sendAdminReply()">发送</button>
-                        </div>
-                    </div>
+            <!-- Settings Tab -->
+            <div id="tab-settings" class="hidden">
+                <div class="card">
+                    <div class="card-title">系统设置</div>
+                    <p style="margin-bottom:16px;color:#666;">管理系统初始化、数据库配置等。首次使用或重置系统时使用。</p>
+                    <button class="btn btn-primary" onclick="window.location.href='/init.html'">打开系统初始化向导</button>
+                    <span style="color:#999;margin-left:12px;font-size:13px;">需要超级管理员(root)权限才能重新初始化</span>
                 </div>
             </div>
 
@@ -339,6 +320,9 @@
                     <div class="form-group"><label>价格 (元)</label><input type="number" id="plan-price" class="form-control" step="0.01" value="300"></div>
                 </div>
                 <div class="form-group"><label>描述</label><input type="text" id="plan-desc" class="form-control"></div>
+                <div class="form-group">
+                    <label>所属停车场</label><select id="plan-lot" class="form-control"></select>
+                </div>
                 <div class="form-group"><label><input type="checkbox" id="plan-active" checked> 启用</label></div>
             </div>
             <div class="modal-footer"><button class="btn btn-default" onclick="hideModal('plan-modal')">取消</button><button class="btn btn-primary" onclick="savePlan()">保存</button></div>
@@ -358,6 +342,9 @@
                 </div>
                 <div class="form-group"><label>每日封顶(元, 0=不限)</label><input type="number" id="billing-max" class="form-control" step="1"></div>
                 <div class="form-group"><label>描述</label><input type="text" id="billing-desc" class="form-control"></div>
+                <div class="form-group">
+                    <label>所属停车场</label><select id="billing-lot-modal" class="form-control"></select>
+                </div>
                 <div class="form-group" id="tier-config-group" style="display:none">
                     <label>阶梯配置 (JSON)</label>
                     <textarea id="billing-tier-config" class="form-control" rows="3" placeholder='[{"hours":2,"rate":5},{"hours":4,"rate":3}]'></textarea>
@@ -365,7 +352,7 @@
                 </div>
                 <div class="form-group"><label><input type="checkbox" id="billing-active" checked> 启用</label></div>
             </div>
-            <div class="modal-footer"><button class="btn btn-default" onclick="hideModal('billing-modal')">取消</button><button class="btn btn-primary" onclick="saveBillingRule()">保存</button></div>
+            <div class="modal-footer"><button class="btn btn-danger btn-sm" onclick="deleteBillingRule()" id="btn-delete-billing" style="display:none;margin-right:auto;">删除规则</button><button class="btn btn-default" onclick="hideModal('billing-modal')">取消</button><button class="btn btn-primary" onclick="saveBillingRule()">保存</button></div>
         </div>
     </div>
 

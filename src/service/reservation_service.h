@@ -2,6 +2,7 @@
 #include "crud_service.h"
 #include "../model/reservation.h"
 #include <unordered_set>
+#include <chrono>
 
 class ReservationService : public CrudService<Reservation> {
 public:
@@ -12,8 +13,10 @@ public:
     bool cancel(int id);
     std::vector<Reservation> getHistory(const std::string& startDate = "", const std::string& endDate = "", int limit = 200, int offset = 0);
     crow::json::wvalue getSpotStatus(const std::string& P_name, int totalSpots);
+    void cleanExpiredReservations();
 protected:
     Reservation mapRow(MYSQL_ROW row) override;
 private:
     ReservationService() = default;
+    std::chrono::steady_clock::time_point lastCleanup_;
 };

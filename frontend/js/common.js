@@ -170,6 +170,14 @@ function initSidebar() {
         const vehicleNav = document.getElementById('nav-vehicles');
         if (vehicleNav) vehicleNav.style.display = 'none';
     }
+    if (!hasPerm('parking.settings')) {
+        const parkingNav = document.getElementById('nav-parking');
+        if (parkingNav) parkingNav.style.display = 'none';
+    }
+    if (!hasPerm('vehicle.checkin')) {
+        const checkinNav = document.getElementById('nav-checkin');
+        if (checkinNav) checkinNav.style.display = 'none';
+    }
     if (!hasPerm('plate.recognize')) {
         const recognizeNav = document.getElementById('nav-recognize');
         if (recognizeNav) recognizeNav.style.display = 'none';
@@ -180,11 +188,10 @@ function initSidebar() {
         if (!hasPerm('message.send')) {
             chatNav.style.display = 'none';
         } else if (user.role === 'admin' || user.role === 'root') {
-            // Admin: rename to "用户反馈" and link to admin feedback tab
             const iconSpan = chatNav.querySelector('.icon');
             if (iconSpan) iconSpan.textContent = '💬';
             chatNav.lastChild.textContent = ' 用户反馈';
-            chatNav.href = '/admin.html?tab=feedback';
+            chatNav.href = '/feedback.html';
         }
     }
 }

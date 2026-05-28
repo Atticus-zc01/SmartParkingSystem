@@ -11,7 +11,11 @@ bool DBInit::createDatabase(const AppConfig& cfg) {
         mysql_close(conn);
         return false;
     }
-    std::string sql = "CREATE DATABASE IF NOT EXISTS `" + cfg.database +
+    // Drop existing database to fully reset
+    std::string dropSql = "DROP DATABASE IF EXISTS `" + cfg.database + "`";
+    mysql_query(conn, dropSql.c_str());
+
+    std::string sql = "CREATE DATABASE `" + cfg.database +
         "` DEFAULT CHARACTER SET utf8mb4 DEFAULT COLLATE utf8mb4_unicode_ci";
     bool ok = mysql_query(conn, sql.c_str()) == 0;
     mysql_close(conn);
@@ -156,20 +160,65 @@ bool DBInit::createTables(const AppConfig& cfg) {
         if (mysql_query(mysql, sql) != 0) return false;
     }
 
-    mysql_query(mysql,
-        "INSERT IGNORE INTO BILLING_RULE (rule_name,rule_type,free_minutes,hourly_rate,max_daily_fee,description,is_active) VALUES "
-        "('标准计费','standard',30,5.00,50.00,'30分钟内免费，之后每小时5元，每日封顶50元',1),"
-        "('阶梯计费','tiered',30,5.00,60.00,'前2小时每小时5元，2-4小时每小时3元，4小时以上每小时2元',0),"
-        "('会员计费','member',60,3.00,30.00,'会员享受60分钟免费，之后每小时3元，每日封顶30元',0),"
-        "('特殊车辆','special',1440,0.00,0.00,'军车、警车、消防车等特殊车辆免费',0)"
-    );
+    mysql_query(mysql, "SELECT COUNT(*) FROM BILLING_RULE");
+    MYSQL_RES* brRes = mysql_store_result(mysql);
+    bool hasBillingRules = false;
+    if (brRes) {
+        MYSQL_ROW brRow = mysql_fetch_row(brRes);
+        if (brRow && std::stoi(brRow[0]) > 0) hasBillingRules = true;
+        mysql_free_result(brRes);
+    }
+    if (!hasBillingRules) {
+        const char* billingSQL =
+            "INSERT INTO BILLING_RULE (rule_name,rule_type,free_minutes,hourly_rate,max_daily_fee,description,is_active,P_name) VALUES "
+            "('标准计费','standard',30,5.00,50.00,'30分钟内免费，之后每小时5元，每日封顶50元',1,'%s'),"
+            "('阶梯计费','tiered',30,5.00,60.00,'前2小时每小时5元，2-4小时每小时3元，4小时以上每小时2元',0,'%s'),"
+            "('会员计费','member',60,3.00,30.00,'会员享受60分钟免费，之后每小时3元，每日封顶30元',0,'%s'),"
+            "('特殊车辆','special',1440,0.00,0.00,'军车、警车、消防车等特殊车辆免费',0,'%s')";
+        // Get all parking lot names
+        MYSQL_RES* lotRes = nullptr;
+        if (mysql_query(mysql, "SELECT P_name FROM PARKING_LOT") == 0)
+            lotRes = mysql_store_result(mysql);
+        if (lotRes) {
+            MYSQL_ROW lrow;
+            while ((lrow = mysql_fetch_row(lotRes))) {
+                std::string pn = lrow[0] ? lrow[0] : "停车场1";
+                char buf[2048];
+                snprintf(buf, sizeof(buf), billingSQL, pn.c_str(), pn.c_str(), pn.c_str(), pn.c_str());
+                mysql_query(mysql, buf);
+            }
+            mysql_free_result(lotRes);
+        }
+    }
 
-    mysql_query(mysql,
-        "INSERT IGNORE INTO PASS_PLAN (plan_name,duration_days,price,description,is_active) VALUES "
-        "('月卡',30,300.00,'30天畅停，适合短期需求',1),"
-        "('季卡',90,800.00,'90天优惠，每天不到9元',1),"
-        "('年卡',365,2880.00,'全年无忧，每天不到8元',1)"
-    );
+    mysql_query(mysql, "SELECT COUNT(*) FROM PASS_PLAN");
+    MYSQL_RES* ppRes = mysql_store_result(mysql);
+    bool hasPassPlans = false;
+    if (ppRes) {
+        MYSQL_ROW ppRow = mysql_fetch_row(ppRes);
+        if (ppRow && std::stoi(ppRow[0]) > 0) hasPassPlans = true;
+        mysql_free_result(ppRes);
+    }
+    if (!hasPassPlans) {
+        const char* planSQL =
+            "INSERT INTO PASS_PLAN (plan_name,duration_days,price,description,is_active,P_name) VALUES "
+            "('月卡',30,300.00,'30天畅停',1,'%s'),"
+            "('季卡',90,800.00,'90天优惠',1,'%s'),"
+            "('年卡',365,2880.00,'全年无忧',1,'%s')";
+        MYSQL_RES* lotRes2 = nullptr;
+        if (mysql_query(mysql, "SELECT P_name FROM PARKING_LOT") == 0)
+            lotRes2 = mysql_store_result(mysql);
+        if (lotRes2) {
+            MYSQL_ROW lrow;
+            while ((lrow = mysql_fetch_row(lotRes2))) {
+                std::string pn = lrow[0] ? lrow[0] : "停车场1";
+                char buf[1024];
+                snprintf(buf, sizeof(buf), planSQL, pn.c_str(), pn.c_str(), pn.c_str());
+                mysql_query(mysql, buf);
+            }
+            mysql_free_result(lotRes2);
+        }
+    }
 
     std::string parking_sql = "INSERT IGNORE INTO PARKING_LOT (P_name,P_total_count,P_current_count,P_reserve_count,P_fee) VALUES ('" +
         cfg.parking_name + "'," + std::to_string(cfg.capacity) + ",0,0," + std::to_string(cfg.fee) + ")";
@@ -248,6 +297,11 @@ bool DBInit::createTables(const AppConfig& cfg) {
     mysql_query(mysql, "ALTER TABLE RESERVATION ADD COLUMN prepaid DECIMAL(10,2) DEFAULT 0.00");
     mysql_query(mysql, "ALTER TABLE RESERVATION ADD COLUMN status VARCHAR(20) DEFAULT 'active'");
     mysql_query(mysql, "ALTER TABLE RESERVATION ADD COLUMN spot_number INT DEFAULT 0");
+    mysql_query(mysql, "ALTER TABLE BILLING_RULE ADD COLUMN P_name VARCHAR(255) DEFAULT '停车场1'");
+    mysql_query(mysql, "ALTER TABLE PASS_PLAN ADD COLUMN P_name VARCHAR(255) DEFAULT '停车场1'");
+    // Backfill NULL P_name values on existing rows
+    mysql_query(mysql, "UPDATE BILLING_RULE SET P_name='停车场1' WHERE P_name IS NULL OR P_name=''");
+    mysql_query(mysql, "UPDATE PASS_PLAN SET P_name='停车场1' WHERE P_name IS NULL OR P_name=''");
 
     // Remove old parking lot name
     mysql_query(mysql, "DELETE FROM PARKING_LOT WHERE P_name='智慧停车场'");
@@ -257,14 +311,13 @@ bool DBInit::createTables(const AppConfig& cfg) {
     mysql_query(mysql, "ALTER TABLE RESERVATION DROP INDEX idx_plate");
     mysql_query(mysql, "ALTER TABLE RESERVATION ADD INDEX idx_plate (license_plate)");
 
-    mysql_query(mysql, "SET GLOBAL event_scheduler = ON");
-    mysql_query(mysql, "DROP EVENT IF EXISTS clean_expired_reservations");
+    // Clean expired reservations synchronously instead of relying on MySQL event scheduler
+    // (event scheduler requires SUPER privilege which may not be available)
     {
         int expire_min = AppConfig::instance().notice_expire_minutes;
-        std::string eventSql = "CREATE EVENT clean_expired_reservations ON SCHEDULE EVERY 1 MINUTE DO "
-            "BEGIN UPDATE RESERVATION SET status='expired' WHERE status='active' AND created_at < DATE_SUB(NOW(), INTERVAL " +
-            std::to_string(expire_min) + " MINUTE); END";
-        mysql_query(mysql, eventSql.c_str());
+        std::string cleanSql = "UPDATE RESERVATION SET status='expired' WHERE status='active' AND created_at < DATE_SUB(NOW(), INTERVAL " +
+            std::to_string(expire_min) + " MINUTE)";
+        mysql_query(mysql, cleanSql.c_str());
     }
 
     return true;
