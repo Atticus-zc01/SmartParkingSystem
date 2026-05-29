@@ -278,8 +278,10 @@ async function loadBlacklist() {
     tbody.innerHTML=list.map(e=>`<tr data-bl-id="${e.id}"><td>${e.id}</td><td><strong>${escapeHtml(e.license_plate)}</strong></td><td>${escapeHtml(e.reason||'-')}</td><td>${formatDateTime(e.created_at)}</td><td><button class="btn btn-danger btn-sm btn-remove-blacklist">移除</button></td></tr>`).join('');
 }
 async function addBlacklist() {
-    const plate=document.getElementById('bl-plate').value.trim(), reason=document.getElementById('bl-reason').value.trim();
+    const plate=document.getElementById('bl-plate').value.trim().toUpperCase(), reason=document.getElementById('bl-reason').value.trim();
     if(!plate){showError('bl-alert','请输入车牌号');return;}
+    if(plate.length<7||plate.length>8){showError('bl-alert','车牌号格式不正确，应为省份汉字+字母+5-6位数字/字母');return;}
+    if(!/^[一-鿿][A-Z][A-Z0-9]{5,6}$/.test(plate)){showError('bl-alert','车牌号格式不正确');return;}
     const r=await post('/api/blacklist',{license_plate:plate,reason});
     if(r&&r.ok){showSuccess('bl-alert','已添加');document.getElementById('bl-plate').value='';document.getElementById('bl-reason').value='';loadBlacklist();}
     else showError('bl-alert',r?.data?.error||'添加失败');
