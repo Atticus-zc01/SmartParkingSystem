@@ -65,6 +65,12 @@
         .spot.selected { background:#00aa7f; color:#fff; border-color:#008a66; transform:scale(1.08); box-shadow:0 2px 12px rgba(0,170,127,0.4); }
         .spot-number { font-size:12px; font-weight:700; }
         .spot-label { font-size:9px; opacity:0.8; }
+        .fp-spot { width:46px; height:46px; border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:700; cursor:pointer; transition:all 0.15s; border:2px solid transparent; user-select:none; box-shadow:0 1px 3px rgba(0,0,0,0.06); }
+        .fp-spot.available { background:#d4edda; color:#155724; border-color:#28a745; }
+        .fp-spot.available:hover { background:#28a745; color:#fff; transform:scale(1.08); box-shadow:0 2px 8px rgba(40,167,69,0.3); }
+        .fp-spot.occupied { background:#f8d7da; color:#721c24; border-color:#dc3545; cursor:not-allowed; }
+        .fp-spot.reserved { background:#fff3cd; color:#856404; border-color:#ffc107; cursor:not-allowed; }
+        .fp-spot.selected { background:#00aa7f; color:#fff; border-color:#008a66; transform:scale(1.08); box-shadow:0 2px 12px rgba(0,170,127,0.4); }
         }
         .spot-info-bar {
             margin-top: 12px;
@@ -278,20 +284,50 @@
 
         function renderGridMap(spots) {
             const area = document.getElementById('map-render-area');
-            area.innerHTML = `<div class="road-label">&#9668; 出口 &#9472;&#9472;&#9472;&#9472;&#9472; 行车道 &#9472;&#9472;&#9472;&#9472;&#9472; 入口 &#9658;</div>
-                <div class="parking-grid-wrapper"><div class="parking-grid" id="parking-grid"></div></div>`;
             let availableCount = 0;
-            const grid = document.getElementById('parking-grid');
-            spots.forEach(spot => {
-                const div = document.createElement('div');
-                div.className = 'spot ' + spot.status;
-                div.innerHTML = '<span class="spot-number">' + spot.number + '</span>';
-                if (spot.status === 'available') { div.innerHTML += '<span class="spot-label">空闲</span>'; availableCount++; div.onclick = () => selectSpot(spot.number); }
-                else if (spot.status === 'occupied') { div.innerHTML += '<span class="spot-label">占用</span>'; }
-                else { div.innerHTML += '<span class="spot-label">预约</span>'; }
-                if (selectedSpot === spot.number) { div.className = 'spot selected'; div.innerHTML = '<span class="spot-number">' + spot.number + '</span><span class="spot-label">已选</span>'; }
-                grid.appendChild(div);
-            });
+            const perZone = 25, cols = 5;
+            const zNames = ['A区','B区','C区','D区'];
+            const zColors = ['#e3f2fd','#fff8e1','#e8f5e9','#fce4ec'];
+            const zones = zNames.map((n,i)=>({name:n,spots:spots.slice(i*perZone,(i+1)*perZone),color:zColors[i]}));
+
+            function rowHtml(arr) {
+                let h = '<div style="display:flex;gap:3px;justify-content:center;">';
+                arr.forEach(s => {
+                    const sel = s.number === selectedSpot;
+                    const cls = sel ? 'fp-spot selected' : 'fp-spot ' + s.status;
+                    const click = s.status === 'available' ? ' onclick="selectSpot('+s.number+')"' : '';
+                    h += '<div class="'+cls+'" style="width:46px;height:46px;font-size:10px;"'+click+'>';
+                    h += '<span style="font-size:10px;font-weight:700;">'+s.number+'</span></div>';
+                    if (s.status === 'available') availableCount++;
+                });
+                for (let e=arr.length; e<cols; e++) h += '<div style="width:46px;height:46px;"></div>';
+                return h + '</div>';
+            }
+
+            let html = '<div class="floor-plan" style="display:inline-block;background:#fafafa;border-radius:8px;padding:12px;">';
+            // Top row: A + B
+            html += '<div style="display:flex;">';
+            for (let zi = 0; zi < 2; zi++) {
+                const z = zones[zi];
+                html += '<div style="flex:1;background:'+z.color+';border-radius:4px;padding:4px;border:1px solid #e0e0e0;'+(zi===0?'margin-right:4px;':'margin-left:4px;')+'">';
+                html += '<div style="text-align:center;font-size:11px;font-weight:700;color:#555;margin-bottom:2px;">'+z.name+'</div>';
+                for (let r = 0; r < cols; r++) html += rowHtml(z.spots.slice(r*cols,(r+1)*cols));
+                html += '</div>';
+            }
+            html += '</div>';
+            // Main road
+            html += '<div style="display:flex;align-items:center;margin:4px 0;"><div style="flex:1;height:28px;background:#e0e0e0;border-radius:2px;display:flex;align-items:center;justify-content:center;"><span style="font-size:10px;color:#888;">🚗 入口 ➡  ⸺⸺  主干道  ⸺⸺  ➡ 🚗 出口</span></div></div>';
+            // Bottom row: C + D
+            html += '<div style="display:flex;">';
+            for (let zi = 2; zi < 4; zi++) {
+                const z = zones[zi];
+                html += '<div style="flex:1;background:'+z.color+';border-radius:4px;padding:4px;border:1px solid #e0e0e0;'+(zi===2?'margin-right:4px;':'margin-left:4px;')+'">';
+                html += '<div style="text-align:center;font-size:11px;font-weight:700;color:#555;margin-bottom:2px;">'+z.name+'</div>';
+                for (let r = 0; r < cols; r++) html += rowHtml(z.spots.slice(r*cols,(r+1)*cols));
+                html += '</div>';
+            }
+            html += '</div></div>';
+            area.innerHTML = html;
             document.getElementById('map-total').textContent = spots.length;
             document.getElementById('map-available').textContent = availableCount;
         }
