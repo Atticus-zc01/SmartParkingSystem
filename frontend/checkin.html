@@ -50,7 +50,6 @@
     </div>
     <div class="main-content">
         <div class="page-header"><h1>车辆入库</h1><p>选择车位后登记车辆入场</p></div>
-        <div id="alert-box"></div>
 
         <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
             <label style="font-size:14px;font-weight:600;">停车场：</label>
@@ -102,7 +101,8 @@
                 </select>
                 <div style="font-size:11px;color:#666;margin-top:6px;">⏱ 充电费与停车费在出库时合并结算</div>
             </div>
-            <button class="btn btn-primary btn-lg btn-block" onclick="doCheckIn()" style="margin-top:12px;">确认入库</button>
+            <div id="alert-box" style="margin-top:8px;"></div>
+            <button class="btn btn-primary btn-lg btn-block" onclick="doCheckIn()" style="margin-top:8px;">确认入库</button>
         </div>
     </div>
 </div>
