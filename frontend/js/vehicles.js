@@ -1,3 +1,52 @@
+// ========== Spot Map Display ==========
+function showSpotMap(spotNumber) {
+    const area = document.getElementById('spot-map-body');
+    const cols = 5;
+    const zNames = ['A区','B区','C区','D区'];
+    const zColors = ['#e3f2fd','#fff8e1','#e8f5e9','#fce4ec'];
+    const total = 100;
+    const perZone = 25;
+
+    let html = '<div style="display:inline-block;background:#fafafa;border-radius:8px;padding:12px;">';
+    // Exit indicator
+    html += '<div style="text-align:right;margin-bottom:4px;font-size:10px;color:#999;">↑ 出口</div>';
+
+    for (let zi = 0; zi < 4; zi++) {
+        if (zi === 2) {
+            // Main road
+            html += '<div style="display:flex;align-items:center;margin:4px 0;"><div style="flex:1;height:24px;background:#e0e0e0;border-radius:2px;display:flex;align-items:center;justify-content:center;"><span style="font-size:9px;color:#888;">🚗 入口 ➡  ⸺⸺  主干道  ⸺⸺  ➡ 🚗 出口</span></div></div>';
+        }
+        const start = zi * perZone;
+        const end = Math.min(start + perZone, total);
+        html += '<div style="display:flex;">';
+        for (let zoneIdx = 0; zoneIdx < 2; zoneIdx++) {
+            const zi2 = zi + zoneIdx;
+            if (zi2 >= 4) continue;
+            const z = {name:zNames[zi2], color:zColors[zi2]};
+            html += '<div style="flex:1;background:'+z.color+';border-radius:4px;padding:4px;border:1px solid #e0e0e0;'+(zoneIdx===0?'margin-right:4px;':'margin-left:4px;')+'">';
+            html += '<div style="text-align:center;font-size:10px;font-weight:700;color:#555;margin-bottom:2px;">'+z.name+'</div>';
+            const zoneStart = zi2 * perZone;
+            for (let r = 0; r < cols; r++) {
+                html += '<div style="display:flex;gap:3px;justify-content:center;">';
+                for (let c = 0; c < cols; c++) {
+                    const n = zoneStart + r * cols + c + 1;
+                    if (n > total) { html += '<div style="width:36px;height:36px;"></div>'; continue; }
+                    const isTarget = n === spotNumber;
+                    html += '<div style="width:36px;height:36px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;border:2px solid '+(isTarget?'#ff4d4f':'transparent')+';background:'+(isTarget?'#ff4d4f':'#d4edda')+';color:'+(isTarget?'#fff':'#155724')+';box-shadow:'+(isTarget?'0 0 8px rgba(255,77,79,0.5)':'')+';">'+n+'</div>';
+                }
+                html += '</div>';
+            }
+            html += '</div>';
+            if (zoneIdx === 0) { zi++; } // skip to next pair
+        }
+        html += '</div>';
+    }
+
+    html += '</div>';
+    area.innerHTML = html;
+    showModal('spot-map-modal');
+}
+
 // 车辆信息页面逻辑
 
 const user = checkAuth();
@@ -45,7 +94,7 @@ async function searchRecords() {
     document.getElementById('record-count').textContent = `共 ${records.length} 条记录`;
 
     if (records.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#999">暂无记录</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#999">暂无记录</td></tr>';
         return;
     }
 
@@ -59,6 +108,7 @@ async function searchRecords() {
             <td>${r.P_name || r.location}</td>
             <td>${r.spot_number ? zoneLabel(r.spot_number) : '-'}</td>
             <td><span class="badge badge-primary">${billingTypes[r.billing_type] || r.billing_type}</span></td>
+            <td>${r.spot_number ? '<button class="btn btn-default btn-xs" onclick="showSpotMap('+r.spot_number+')">📍 地图</button>' : '-'}</td>
             <td>
                 ${canDelete ? `<button class="btn btn-danger btn-sm" onclick="deleteRecord(${r.id})">删除</button>` : '<span style="color:#999">-</span>'}
             </td>
