@@ -144,16 +144,17 @@ async function loadReservations() {
     `).join('');
 }
 
-function checkinFromReservation(plate, spotNum, pname) {
-    document.getElementById('checkin-plate').value = plate;
-    if (pname) {
-        const sel = document.getElementById('lot-selector');
-        if (sel) { sel.value = pname; onLotChange(); }
+async function checkinFromReservation(plate, spotNum, pname) {
+    if (!plate) return;
+    const body = { license_plate: plate, billing_type: 'standard', P_name: pname || currentLotName, spot_number: spotNum };
+    const res = await post('/api/vehicle/checkin', body);
+    if (res && res.ok) {
+        showSuccess('alert-box', `<div style="font-size:15px;font-weight:600;">✅ 预约车辆已入库</div><div>🚗 ${plate} → ${zoneLabel(spotNum)}</div>`);
+        loadReservations();
+        switchToLot(currentLotName);
+    } else {
+        showError('alert-box', res?.data?.error || '入库失败');
     }
-    if (spotNum > 0) {
-        setTimeout(() => selectSpot(spotNum), 300);
-    }
-    document.getElementById('checkin-plate').focus();
 }
 
 async function doCheckIn() {
