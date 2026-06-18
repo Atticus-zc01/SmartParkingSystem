@@ -129,6 +129,33 @@ function selectSpot(num) {
     document.getElementById('charging-section').style.display = isEV(num) ? 'block' : 'none';
 }
 
+async function loadReservations() {
+    const container = document.getElementById('reservation-list');
+    if (!container) return;
+    const res = await get('/api/reservation/list');
+    if (!res || !res.ok || !res.data.reservations) { container.innerHTML = '<span>暂无待入库预约</span>'; return; }
+    const list = res.data.reservations.filter(r => r.status === 'active');
+    if (list.length === 0) { container.innerHTML = '<span>暂无待入库预约</span>'; return; }
+    container.innerHTML = list.map(r => `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #f0f0f0;">
+            <div><strong>${r.license_plate}</strong> <span style="color:#999;font-size:12px;">${r.P_name||''} ${r.spot_number ? '· '+r.spot_number+'号':''}</span></div>
+            <button class="btn btn-primary btn-sm" onclick="checkinFromReservation('${r.license_plate}',${r.spot_number||0},'${r.P_name||''}')">一键入库</button>
+        </div>
+    `).join('');
+}
+
+function checkinFromReservation(plate, spotNum, pname) {
+    document.getElementById('checkin-plate').value = plate;
+    if (pname) {
+        const sel = document.getElementById('lot-selector');
+        if (sel) { sel.value = pname; onLotChange(); }
+    }
+    if (spotNum > 0) {
+        setTimeout(() => selectSpot(spotNum), 300);
+    }
+    document.getElementById('checkin-plate').focus();
+}
+
 async function doCheckIn() {
     const plate = document.getElementById('checkin-plate').value.trim().toUpperCase();
     const billing = document.getElementById('checkin-billing').value;
@@ -165,3 +192,4 @@ async function doCheckIn() {
 
 document.getElementById('checkin-plate')?.addEventListener('keydown', e => { if (e.key === 'Enter') doCheckIn(); });
 loadLots();
+loadReservations();
