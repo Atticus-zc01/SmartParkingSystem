@@ -142,12 +142,20 @@ async function doCheckIn() {
 
     const res = await post('/api/vehicle/checkin', body);
     if (res && res.ok) {
-        showSuccess('alert-box', `车辆 ${plate} 已入库${selectedSpot ? ' (' + selectedSpot + '号车位)' : ''}`);
+        const spotInfo = zoneLabel(selectedSpot);
+        let chargeInfo = '';
+        const chargePrices = {charge_1h:'¥5.00/时', charge_3h:'¥12.00/3时', charge_6h:'¥20.00/6时', charge_12h:'¥35.00/12时'};
+        if (chargePlan && chargePrices[chargePlan]) chargeInfo = ' | ⚡充电: ' + chargePrices[chargePlan];
+
+        showSuccess('alert-box', `<div style="text-align:left;line-height:1.8;">
+            <div style="font-size:15px;font-weight:600;margin-bottom:4px;">✅ 入库成功</div>
+            <div>🚗 ${plate} → ${spotInfo}</div>
+            <div>📋 ${currentLotName} | ${billing}</div>${chargeInfo ? '<div>'+chargeInfo+'</div>' : ''}
+        </div>`);
         document.getElementById('checkin-plate').value = '';
         selectedSpot = 0;
         document.getElementById('selected-spot-label').textContent = '';
         loadSpotMap();
-        // Reload lot stats
         const lotRes = await get('/api/parking/list');
         if (lotRes && lotRes.ok) allLots = lotRes.data.lots || [];
     } else {
