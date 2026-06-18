@@ -59,21 +59,74 @@ async function loadSpotMap() {
     if (!res || !res.ok) return;
     const spots = res.data.spots || [];
     const container = document.getElementById('spot-map');
-    container.innerHTML = spots.map(s => {
-        let cls = 'spot ' + s.status;
-        let label = s.status === 'available' ? '空闲' : s.status === 'occupied' ? '占用' : '预约';
-        let click = s.status === 'available' ? `onclick="selectSpot(${s.number})"` : '';
-        return `<div class="${cls}" id="spot-${s.number}" ${click}>
-            <span>${s.number}</span><span style="font-size:9px;opacity:0.8;">${label}</span></div>`;
-    }).join('');
+    const perZone = 25, cols = 5;
+    const zNames = ['A区','B区','C区','D区'];
+    const zColors = ['#e3f2fd','#fff8e1','#e8f5e9','#fce4ec'];
+
+    // Build status lookup
+    const statusMap = {};
+    spots.forEach(s => { statusMap[s.number] = s.status; });
+
+    function zoneHtml(zoneIdx, zoneStart) {
+        let h = '<div style="flex:1;background:'+zColors[zoneIdx]+';border-radius:4px;padding:4px;border:1px solid #e0e0e0;'+(zoneIdx%2===0?'margin-right:4px;':'margin-left:4px;')+'">';
+        h += '<div style="text-align:center;font-size:11px;font-weight:700;color:#555;margin-bottom:2px;">'+zNames[zoneIdx]+'</div>';
+        for (let r = 0; r < cols; r++) {
+            h += '<div style="display:flex;gap:3px;justify-content:center;">';
+            for (let c = 0; c < cols; c++) {
+                const n = zoneStart + r * cols + c + 1;
+                if (n > 100) { h += '<div style="width:46px;height:46px;"></div>'; continue; }
+                const st = statusMap[n] || 'available';
+                const sel = n === selectedSpot;
+                const cls = sel ? 'fp-spot selected' : 'fp-spot ' + st;
+                const click = st === 'available' ? ' onclick="selectSpot('+n+')"' : '';
+                h += '<div class="'+cls+'"'+click+' style="width:46px;height:46px;font-size:10px;">'+n+'</div>';
+            }
+            h += '</div>';
+        }
+        h += '</div>';
+        return h;
+    }
+
+    let html = '<div style="display:inline-block;background:#fafafa;border-radius:8px;padding:12px;">';
+    // A + B
+    html += '<div style="display:flex;">';
+    html += zoneHtml(0, 0);
+    html += zoneHtml(1, perZone);
+    html += '</div>';
+    // Main road
+    html += '<div style="display:flex;align-items:center;margin:4px 0;"><div style="flex:1;height:28px;background:#e0e0e0;border-radius:2px;display:flex;align-items:center;justify-content:center;"><span style="font-size:10px;color:#888;">🚗 入口 ➡  ⸺⸺  主干道  ⸺⸺  ➡ 🚗 出口</span></div></div>';
+    // C + D
+    html += '<div style="display:flex;">';
+    html += zoneHtml(2, perZone*2);
+    html += zoneHtml(3, perZone*3);
+    html += '</div>';
+    html += '</div>';
+
+    container.innerHTML = html;
+}
+
+function zoneLabel(num) {
+    if (!num || num < 1) return '';
+    if (num <= 25) return 'A区' + num;
+    if (num <= 50) return 'B区' + num;
+    if (num <= 75) return 'C区' + num;
+    return 'D区' + num;
 }
 
 function selectSpot(num) {
-    document.querySelectorAll('#spot-map .spot.selected').forEach(d => d.classList.remove('selected'));
-    const el = document.getElementById('spot-' + num);
-    if (el) el.classList.add('selected');
+    document.querySelectorAll('#spot-map .fp-spot.selected').forEach(d => d.classList.remove('selected'));
+    const el = document.querySelector('#spot-map .fp-spot');
+    // Find and select by rebuilding map (simplest approach)
+    loadSpotMap();
+    // Re-highlight
+    setTimeout(() => {
+        const spots = document.querySelectorAll('#spot-map .fp-spot');
+        spots.forEach(d => {
+            if (d.textContent.trim() === String(num)) d.classList.add('selected');
+        });
+    }, 50);
     selectedSpot = num;
-    document.getElementById('selected-spot-label').textContent = '已选 ' + num + ' 号车位';
+    document.getElementById('selected-spot-label').textContent = '已选 ' + zoneLabel(num);
 }
 
 async function doCheckIn() {
