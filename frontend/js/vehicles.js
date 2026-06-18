@@ -8,6 +8,14 @@ if (!hasPerm('vehicle.query')) {
 }
 const canDelete = hasPerm('vehicle.delete');
 
+function zoneLabel(num) {
+    if (!num || num < 1) return '-';
+    if (num <= 25) return 'A区' + num;
+    if (num <= 50) return 'B区' + num;
+    if (num <= 75) return 'C区' + num;
+    return 'D区' + num;
+}
+
 const billingTypes = {
     'standard': '标准计费',
     'tiered': '阶梯计费',
@@ -49,7 +57,7 @@ async function searchRecords() {
             <td>${formatDateTime(r.check_out_time)}</td>
             <td>${formatFee(r.fee)}</td>
             <td>${r.P_name || r.location}</td>
-            <td>${r.spot_number ? r.spot_number+'号' : '-'}</td>
+            <td>${r.spot_number ? zoneLabel(r.spot_number) : '-'}</td>
             <td><span class="badge badge-primary">${billingTypes[r.billing_type] || r.billing_type}</span></td>
             <td>
                 ${canDelete ? `<button class="btn btn-danger btn-sm" onclick="deleteRecord(${r.id})">删除</button>` : '<span style="color:#999">-</span>'}
