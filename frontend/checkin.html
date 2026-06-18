@@ -18,6 +18,8 @@
         .fp-spot.occupied { background:#f8d7da; color:#721c24; border-color:#dc3545; cursor:not-allowed; }
         .fp-spot.reserved { background:#fff3cd; color:#856404; border-color:#ffc107; cursor:not-allowed; }
         .fp-spot.selected { background:#00aa7f; color:#fff; border-color:#008a66; transform:scale(1.08); box-shadow:0 2px 12px rgba(0,170,127,0.4); }
+        .fp-spot.ev { background:#cce5ff; color:#004085; border-color:#2196F3; }
+        .fp-spot.ev:hover { background:#2196F3; color:#fff; transform:scale(1.08); box-shadow:0 2px 8px rgba(33,150,243,0.3); }
     </style>
 </head>
 <body>
@@ -64,6 +66,10 @@
 
         <div class="card">
             <div class="card-title">选择车位 <span id="selected-spot-label" style="font-weight:normal;font-size:13px;color:#999;"></span></div>
+            <div style="font-size:11px;color:#666;margin-bottom:6px;display:flex;gap:16px;">
+                <span>🟩 普通车位</span>
+                <span><span style="display:inline-block;width:12px;height:12px;background:#cce5ff;border:1px solid #2196F3;border-radius:2px;vertical-align:middle;"></span> 充电车位</span>
+            </div>
             <div id="spot-map" style="display:flex;flex-wrap:wrap;gap:6px;max-height:360px;overflow-y:scroll;scrollbar-gutter:stable;"></div>
         </div>
 
@@ -79,7 +85,18 @@
                     <select id="checkin-billing" class="form-control"></select>
                 </div>
             </div>
-            <button class="btn btn-primary btn-lg btn-block" onclick="doCheckIn()">确认入库</button>
+            <div id="charging-section" style="display:none;margin-top:12px;padding:12px;background:#e3f2fd;border-radius:8px;border:1px solid #90caf9;">
+                <div style="font-size:13px;font-weight:600;color:#1565c0;margin-bottom:8px;">⚡ 充电套餐（蓝色车位为充电专用）</div>
+                <select id="charging-plan" class="form-control">
+                    <option value="">不充电（仅停车）</option>
+                    <option value="charge_1h">1小时 · ¥5.00</option>
+                    <option value="charge_3h">3小时 · ¥12.00（省¥3）</option>
+                    <option value="charge_6h">6小时 · ¥20.00（省¥10）</option>
+                    <option value="charge_12h">12小时 · ¥35.00（省¥25）</option>
+                </select>
+                <div style="font-size:11px;color:#666;margin-top:6px;">⏱ 充电费与停车费在出库时合并结算</div>
+            </div>
+            <button class="btn btn-primary btn-lg btn-block" onclick="doCheckIn()" style="margin-top:12px;">确认入库</button>
         </div>
     </div>
 </div>

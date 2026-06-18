@@ -2,6 +2,7 @@ const user = checkAuth();
 if (user) { initSidebar(); if (!hasPerm('vehicle.checkin')) { document.querySelector('.main-content').innerHTML = '<div class="card" style="text-align:center;padding:60px"><h2>权限不足</h2><p style="color:#999;">需要车辆入库权限</p></div>'; } }
 
 let allLots = [], currentLotName = '', selectedSpot = 0;
+function isEV(n) { return (n - 1) % 25 >= 20; }
 
 async function loadLots() {
     const res = await get('/api/parking/list');
@@ -77,7 +78,9 @@ async function loadSpotMap() {
                 if (n > 100) { h += '<div style="width:46px;height:46px;"></div>'; continue; }
                 const st = statusMap[n] || 'available';
                 const sel = n === selectedSpot;
-                const cls = sel ? 'fp-spot selected' : 'fp-spot ' + st;
+                const ev = isEV(n);
+                const extra = (ev && st === 'available') ? ' ev' : '';
+                const cls = sel ? 'fp-spot selected' : 'fp-spot ' + st + extra;
                 const click = st === 'available' ? ' onclick="selectSpot('+n+')"' : '';
                 h += '<div class="'+cls+'"'+click+' style="width:46px;height:46px;font-size:10px;">'+n+'</div>';
             }
@@ -115,18 +118,15 @@ function zoneLabel(num) {
 
 function selectSpot(num) {
     document.querySelectorAll('#spot-map .fp-spot.selected').forEach(d => d.classList.remove('selected'));
-    const el = document.querySelector('#spot-map .fp-spot');
-    // Find and select by rebuilding map (simplest approach)
     loadSpotMap();
-    // Re-highlight
     setTimeout(() => {
-        const spots = document.querySelectorAll('#spot-map .fp-spot');
-        spots.forEach(d => {
+        document.querySelectorAll('#spot-map .fp-spot').forEach(d => {
             if (d.textContent.trim() === String(num)) d.classList.add('selected');
         });
     }, 50);
     selectedSpot = num;
     document.getElementById('selected-spot-label').textContent = '已选 ' + zoneLabel(num);
+    document.getElementById('charging-section').style.display = isEV(num) ? 'block' : 'none';
 }
 
 async function doCheckIn() {
@@ -136,7 +136,9 @@ async function doCheckIn() {
     if (!currentLotName) { showError('alert-box', '请选择停车场'); return; }
     if (selectedSpot <= 0) { showError('alert-box', '请选择车位'); return; }
 
+    const chargePlan = document.getElementById('charging-plan')?.value || '';
     const body = { license_plate: plate, billing_type: billing, P_name: currentLotName, spot_number: selectedSpot };
+    if (chargePlan) body.charging_plan = chargePlan;
 
     const res = await post('/api/vehicle/checkin', body);
     if (res && res.ok) {

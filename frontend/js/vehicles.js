@@ -12,7 +12,11 @@ function showSpotMap(spotNumber) {
             const n = zoneStart + rowIdx * cols + c + 1;
             if (n > 100) { h += '<div style="width:46px;height:46px;"></div>'; continue; }
             const isTarget = n === spotNumber;
-            h += '<div style="width:46px;height:46px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;border:2px solid '+(isTarget?'#ff4d4f':'transparent')+';background:'+(isTarget?'#ff4d4f':'#d4edda')+';color:'+(isTarget?'#fff':'#155724')+';box-shadow:'+(isTarget?'0 0 10px rgba(255,77,79,0.6)':'0 1px 3px rgba(0,0,0,0.06)')+';">'+n+'</div>';
+            const isEV = (n-1)%25 >= 20;
+            let bg = '#d4edda', cl = '#155724', bd = 'transparent', sh = '0 1px 3px rgba(0,0,0,0.06)';
+            if (isTarget) { bg = '#ff4d4f'; cl = '#fff'; bd = '#ff4d4f'; sh = '0 0 10px rgba(255,77,79,0.6)'; }
+            else if (isEV) { bg = '#cce5ff'; cl = '#004085'; bd = '#2196F3'; }
+            h += '<div style="width:46px;height:46px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;border:2px solid '+bd+';background:'+bg+';color:'+cl+';box-shadow:'+sh+';">'+n+'</div>';
         }
         return h + '</div>';
     }

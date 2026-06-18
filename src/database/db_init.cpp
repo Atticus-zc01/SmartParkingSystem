@@ -59,6 +59,8 @@ bool DBInit::createTables(const AppConfig& cfg) {
         "  exit_deadline DATETIME DEFAULT NULL,"
         "  reservation_id INT DEFAULT NULL,"
         "  spot_number INT DEFAULT 0,"
+        "  charging_plan VARCHAR(20) DEFAULT '',"
+        "  charging_fee DECIMAL(10,2) DEFAULT 0.00,"
         "  INDEX idx_plate (license_plate),"
         "  INDEX idx_checkin (check_in_time)"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
@@ -342,6 +344,8 @@ bool DBInit::createTables(const AppConfig& cfg) {
     // Add operator_id to CAR_RECORD for tracking who performed check-in
     mysql_query(mysql, "ALTER TABLE CAR_RECORD ADD COLUMN operator_id INT DEFAULT 0");
     mysql_query(mysql, "ALTER TABLE CAR_RECORD ADD INDEX idx_operator (operator_id)");
+    mysql_query(mysql, "ALTER TABLE CAR_RECORD ADD COLUMN charging_plan VARCHAR(20) DEFAULT ''");
+    mysql_query(mysql, "ALTER TABLE CAR_RECORD ADD COLUMN charging_fee DECIMAL(10,2) DEFAULT 0.00");
 
     // User-vehicle binding table
     mysql_query(mysql,

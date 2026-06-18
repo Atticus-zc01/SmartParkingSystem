@@ -71,6 +71,8 @@
         .fp-spot.occupied { background:#f8d7da; color:#721c24; border-color:#dc3545; cursor:not-allowed; }
         .fp-spot.reserved { background:#fff3cd; color:#856404; border-color:#ffc107; cursor:not-allowed; }
         .fp-spot.selected { background:#00aa7f; color:#fff; border-color:#008a66; transform:scale(1.08); box-shadow:0 2px 12px rgba(0,170,127,0.4); }
+        .fp-spot.ev { background:#cce5ff; color:#004085; border-color:#2196F3; }
+        .fp-spot.ev:hover { background:#2196F3; color:#fff; transform:scale(1.08); box-shadow:0 2px 8px rgba(33,150,243,0.3); }
         }
         .spot-info-bar {
             margin-top: 12px;
@@ -296,7 +298,10 @@
                     const sel = s.number === selectedSpot;
                     const cls = sel ? 'fp-spot selected' : 'fp-spot ' + s.status;
                     const click = s.status === 'available' ? ' onclick="selectSpot('+s.number+')"' : '';
-                    h += '<div class="'+cls+'" style="width:46px;height:46px;font-size:10px;"'+click+'>';
+                    var _ev = (s.number-1)%25 >= 20;
+                    var _xtra = (_ev && s.status === 'available') ? ' ev' : '';
+                    var _cls2 = sel ? 'fp-spot selected' : 'fp-spot ' + s.status + _xtra;
+                    h += '<div class="'+_cls2+'" style="width:46px;height:46px;font-size:10px;"'+click+'>';
                     h += '<span style="font-size:10px;font-weight:700;">'+s.number+'</span></div>';
                     if (s.status === 'available') availableCount++;
                 });

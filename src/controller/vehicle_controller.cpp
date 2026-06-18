@@ -17,9 +17,11 @@ void VehicleController::registerRoutes(crow::SimpleApp& app) {
         if (body.has("billing_type")) billing_type = body["billing_type"].s();
         std::string P_name = body.has("P_name") ? std::string(body["P_name"].s()) : "";
         int spotNum = body.has("spot_number") ? body["spot_number"].i() : 0;
+        std::string charging_plan;
+        if (body.has("charging_plan")) charging_plan = std::string(body["charging_plan"].s());
 
         std::string error;
-        if (!VehicleService::instance().checkIn(plate, billing_type, P_name, spotNum, auth.first, error))
+        if (!VehicleService::instance().checkIn(plate, billing_type, P_name, spotNum, auth.first, charging_plan, error))
             return BaseController::errorResponse(400, error);
 
         crow::json::wvalue res;

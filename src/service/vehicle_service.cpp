@@ -19,10 +19,14 @@ bool VehicleService::checkIn(const std::string& plate, const std::string& billin
 }
 
 bool VehicleService::checkIn(const std::string& plate, const std::string& billing_type, const std::string& P_name, int spotNum, std::string& error) {
-    return checkIn(plate, billing_type, P_name, spotNum, 0, error);
+    return checkIn(plate, billing_type, P_name, spotNum, 0, "", error);
 }
 
 bool VehicleService::checkIn(const std::string& plate, const std::string& billing_type, const std::string& P_name, int spotNum, int operatorId, std::string& error) {
+    return checkIn(plate, billing_type, P_name, spotNum, operatorId, "", error);
+}
+
+bool VehicleService::checkIn(const std::string& plate, const std::string& billing_type, const std::string& P_name, int spotNum, int operatorId, const std::string& charging_plan, std::string& error) {
     if (!validatePlate(plate)) { error = "车牌号格式不正确"; return false; }
 
     std::string blReason;
@@ -141,11 +145,13 @@ bool VehicleService::checkIn(const std::string& plate, const std::string& billin
 
     std::string spotCol = spotNumber > 0 ? ",spot_number" : "";
     std::string spotVal = spotNumber > 0 ? "," + std::to_string(spotNumber) : "";
+    std::string chgCol = !charging_plan.empty() ? ",charging_plan" : "";
+    std::string chgVal = !charging_plan.empty() ? ",'" + charging_plan + "'" : "";
 
-    sql = "INSERT INTO CAR_RECORD (license_plate,check_in_time,location,billing_type,reservation_id,P_name,operator_id" + spotCol + ") VALUES (" +
+    sql = "INSERT INTO CAR_RECORD (license_plate,check_in_time,location,billing_type,reservation_id,P_name,operator_id" + spotCol + chgCol + ") VALUES (" +
         quote(mysql, plate) + ",NOW()," + quote(mysql, parkingName) + "," +
         quote(mysql, billing_type) + "," + std::to_string(reservationId) + "," +
-        quote(mysql, parkingName) + "," + std::to_string(operatorId) + spotVal + ")";
+        quote(mysql, parkingName) + "," + std::to_string(operatorId) + spotVal + chgVal + ")";
     if (mysql_query(mysql, sql.c_str()) != 0) { error = "插入记录失败"; return false; }
 
     if (!tx.commit()) { error = "事务提交失败"; return false; }
@@ -191,6 +197,29 @@ bool VehicleService::checkOut(const std::string& plate, int userId, double& fee,
 
     fee = calculateFee(mysql, plate, check_in, billing_type, carLot, reservationId);
 
+    // Charging fee
+    {
+        std::string csql = "SELECT charging_plan FROM CAR_RECORD WHERE id=" + std::to_string(rec_id);
+        if (mysql_query(mysql, csql.c_str()) == 0) {
+            MYSQL_RES* cres = mysql_store_result(mysql);
+            if (cres) {
+                MYSQL_ROW crow = mysql_fetch_row(cres);
+                if (crow && crow[0]) {
+                    std::string plan = crow[0];
+                    double cf = 0;
+                    if (plan == "charge_1h") cf = 5.00;
+                    else if (plan == "charge_3h") cf = 12.00;
+                    else if (plan == "charge_6h") cf = 20.00;
+                    else if (plan == "charge_12h") cf = 35.00;
+                    fee += cf;
+                    std::string u = "UPDATE CAR_RECORD SET charging_fee=" + std::to_string(cf) + " WHERE id=" + std::to_string(rec_id);
+                    mysql_query(mysql, u.c_str());
+                }
+                mysql_free_result(cres);
+            }
+        }
+    }
+
     if (fee > 0.01) {
         int payerId = userId;
         // If the plate has a monthly pass owner, deduct from that user instead of the operator
@@ -227,7 +256,7 @@ bool VehicleService::checkOut(const std::string& plate, int userId, double& fee,
     }
 
     sql = "SELECT id,license_plate,check_in_time,check_out_time,fee,location,billing_type,"
-        "CONCAT(FLOOR(TIMESTAMPDIFF(MINUTE,check_in_time,check_out_time)/60),'小时',MOD(TIMESTAMPDIFF(MINUTE,check_in_time,check_out_time),60),'分') AS duration,COALESCE(exit_deadline,''),COALESCE(P_name,location),COALESCE(spot_number,0) FROM CAR_RECORD WHERE id=" +
+        "CONCAT(FLOOR(TIMESTAMPDIFF(MINUTE,check_in_time,check_out_time)/60),'小时',MOD(TIMESTAMPDIFF(MINUTE,check_in_time,check_out_time),60),'分') AS duration,COALESCE(exit_deadline,''),COALESCE(P_name,location),COALESCE(spot_number,0),COALESCE(charging_fee,0) FROM CAR_RECORD WHERE id=" +
         std::to_string(rec_id);
     if (mysql_query(mysql, sql.c_str()) == 0) {
         res = mysql_store_result(mysql);
@@ -243,6 +272,7 @@ bool VehicleService::checkOut(const std::string& plate, int userId, double& fee,
             record.exit_deadline = row[8] ? row[8] : "";
             record.P_name = row[9] ? row[9] : "";
             record.spot_number = row[10] ? std::stoi(row[10]) : 0;
+            record.charging_fee = row[11] ? std::stod(row[11]) : 0.0;
             mysql_free_result(res);
         }
     }
